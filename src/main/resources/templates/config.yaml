@@ -1,0 +1,99 @@
+# mkr-agent 配置（技术参数，不进 prompt）。三层指令文件体系：
+#   SOUL.md（身份）→ AGENTS.md（项目指令）→ config.yaml（本文件）
+# 支持 ${VAR} 与 ${VAR:-default} 环境变量替换（读取 .env）。
+
+llm:
+  provider: openai            # openai | anthropic | doubao | zhipu | ollama | vllm | openrouter | deepseek
+  base-url: https://api.openai.com/v1
+  model: gpt-4o               # 或 claude-sonnet-4-5 / glm-4-plus / glm-4-flash / doubao-seed-1-6
+  api-key: ${LLM_API_KEY}
+  max-tokens: 8192
+  temperature: 0
+  streaming: true
+  # thinking-budget: 0        # >0 开启扩展思考（Anthropic thinking / GLM reasoning）
+  # timeout-ms: 120000
+  # watchdog-idle-ms: 60000   # 流空闲看门狗
+
+tools:
+  web-search:
+    provider: tavily          # tavily | jina | serper
+    api-key: ${TAVILY_API_KEY}
+    max-results: 5
+  web-fetch:
+    provider: local           # local(jsoup) | jina-reader
+  sandbox:
+    type: local               # local(默认,权限门控) | docker | bwrap | cloud
+    # image: alpine:3.20      # docker 用
+    # memory-limit: 2g
+    # cpus: 1.0
+    # pids-limit: 256
+    timeout-ms: 60000
+    network-allowlist: []     # 非 local 时：空 = 默认断外网
+  python-bin: python3
+  # cloud-sandbox-url: ""     # cloud 沙箱 endpoint
+  # cloud-sandbox-key: ""
+
+agent:
+  max-iterations: 30
+  context-max-tokens: 64000
+  status-bar: true
+  compression: true
+  permission-mode: default    # default | accept-edits | plan | auto-approve
+  soul-file: ~/.mkr/SOUL.md   # 人格文件（项目根 SOUL.md 覆盖全局）
+  profile: default            # 多人格：~/.mkr/profiles/<name>/SOUL.md
+  mode: react                 # react | plan | reflect | func
+  consecutive-error-max: 5    # 熔断阈值
+  compression-fail-max: 3     # 压缩失败升级阈值
+  tool-output-threshold: 8000 # 字符（≈2000 token，超出写盘归档）
+
+# 路径规则也可放 config/permissions.yml（项目级 > ~/.mkr/permissions.yml；deny 跨层并集）
+permissions:
+  allow: ["./workspace/**"]
+  ask: ["./config/config.yaml", "./pom.xml"]
+  deny: ["~/.ssh/**", "~/.aws/**", ".env", "**/*.pem", "/etc/**", "**/target/**"]
+  protected-dirs: ["~/.ssh", "~/.aws", "~/.gnupg", ".env", "**/*.pem", "**/id_rsa", "/etc", "/usr", "/bin", "/sbin", "/var", "/System", "/Library"]
+  write-risk:                 # 文件操作风险分级（覆盖/删除默认 HIGH → 需授权）
+    read: LOW
+    create: MEDIUM
+    overwrite: HIGH
+    delete: HIGH
+
+memory:
+  storage: filesystem         # filesystem(默认,md) | vector-first
+  root: workspace/memories
+  metadata-db: none           # sqlite(可选,需驱动) | none | postgres
+  vector-store: in-memory     # in-memory(默认) | pgvector
+  hybrid-retrieval: true      # 全文 + 向量 RRF 融合
+  embedding:                  # 配置后启用向量检索（OpenAI 兼容 /embeddings）
+    base-url: ""
+    api-key: ""
+    model: embedding-3
+
+eval:
+  judge: llm-as-judge         # llm-as-judge | rubric | exact
+  dataset: eval/tasks.json
+
+obs:
+  otlp-endpoint: ""           # 留空关闭 OTel 导出，如 http://localhost:4317
+  # prices:                   # USD / 1M tokens [输入, 输出]（覆盖内置默认）
+  #   glm-4-plus: [0.7, 0.7]
+  regression-dir: eval/regression
+
+multiagent:
+  enabled: true
+  manager: false              # Manager/Worker 模式
+  bus: memory                 # memory | redis
+  # redis-url: redis://localhost:6379
+
+mcp:
+  config-file: config/mcp.yml
+  auto-start: false           # 启动即连接全部 MCP 服务器
+
+features:                     # 特性开关（消融）；环境变量 MKR_FEATURE_<NAME>=true/false 覆盖
+  status-bar: true
+  compression: true
+  sidecar: true               # 高危操作 Sidecar 独立审查
+  progressive-tools: false    # true: >7 工具仅暴露 read_tool_defs+索引（spec 默认）；false: 全量暴露（可用性优先）
+  otel: true
+  memory-hybrid: true
+  subagents: true

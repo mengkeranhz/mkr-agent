@@ -1,0 +1,43 @@
+# mkr 路径权限规则（项目级）。层级：本文件 > ~/.mkr/permissions.yml；deny 跨层取并集且永远最高优先。
+# 语法：** 跨目录、* 单段、? 单字符；~ 展开 home；./ 相对项目根；纯文件名（如 .env）按任意深度匹配。
+# 决策优先级：deny > ask > allow > 默认（读/新建放行；覆盖/删除 HIGH 需授权）。
+
+allow:
+  - ./workspace/**
+  - ./skills/**
+  - ./eval/**
+
+ask:                          # 写入前请求授权（显示 diff 预览）
+  - ./config/config.yaml
+  - ./pom.xml
+  - ./README.md
+  - ./AGENTS.md
+
+deny:                         # 永远拒绝（不可审批放行）
+  - ~/.ssh/**
+  - ~/.aws/**
+  - ~/.gnupg/**
+  - .env
+  - "**/*.pem"
+  - "**/id_rsa"
+  - /etc/**
+  - /usr/**
+  - /bin/**
+  - /sbin/**
+  - "**/target/**"
+  - "**/.git/**"
+
+protected-dirs:               # 受保护（默认拒绝，强制人工授权；宽松模式仍不放行）
+  - ~/.ssh
+  - ~/.aws
+  - ~/.gnupg
+  - .env
+  - "**/*.pem"
+  - "**/id_rsa"
+  - /etc
+  - /usr
+  - /bin
+  - /sbin
+  - /var
+  - /System
+  - /Library

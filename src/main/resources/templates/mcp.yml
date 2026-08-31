@@ -1,0 +1,7 @@
+# MCP 服务器配置（stdio 传输）。管理：mkr mcp add/list/remove
+# 凭证走环境变量，不写入命令；同名工具以本地为准；MCP 工具默认不进 system 常驻。
+servers: {}
+#  github:
+#    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+#    env:
+#      GITHUB_TOKEN: ${GITHUB_TOKEN}

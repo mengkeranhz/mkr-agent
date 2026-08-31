@@ -1,0 +1,18 @@
+[
+  {
+    "id": "fib-demo",
+    "task": "写一个 Java 类 Fib 打印斐波那契数列前 10 项到 workspace/fib.txt，然后运行验证输出存在且包含 34。",
+    "expected": "34",
+    "rubric": ["workspace/fib.txt"],
+    "mode": "plan",
+    "permission-mode": "accept-edits"
+  },
+  {
+    "id": "calc-demo",
+    "task": "用 calculator 工具计算 (1234 * 5678) / 3 的值并直接给出结果数字。",
+    "expected": "2337457.3333333333",
+    "rubric": ["2337457"],
+    "mode": "func",
+    "permission-mode": "default"
+  }
+]

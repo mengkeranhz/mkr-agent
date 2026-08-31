@@ -1,0 +1,18 @@
+<configuration>
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} -- %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- CLI 输出保持干净：三方库降噪 -->
+  <logger name="org.reflections" level="WARN"/>
+  <logger name="io.opentelemetry" level="WARN"/>
+  <logger name="org.jline" level="WARN"/>
+  <logger name="com.mkr" level="${MKR_LOG_LEVEL:-INFO}"/>
+
+  <root level="WARN">
+    <appender-ref ref="STDERR"/>
+  </root>
+</configuration>
