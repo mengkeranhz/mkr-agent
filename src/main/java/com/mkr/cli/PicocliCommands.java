@@ -111,7 +111,7 @@ public final class PicocliCommands {
         @Parameters(index = "0", description = "任务描述", arity = "1")
         String task;
 
-        @Option(names = "--mode", description = "思考模式: react | plan | reflect | func")
+        @Option(names = "--mode", description = "思考模式: react | plan | reflect | func | manager")
         String mode;
 
         @Option(names = "--model", description = "模型覆盖（如 glm-4-plus）")
