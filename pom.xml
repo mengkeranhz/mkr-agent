@@ -99,6 +99,19 @@
       <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- 浏览器冒烟测试用（test scope 不进 shade 包，运行时仍走 full profile 可选依赖） -->
+    <dependency>
+      <groupId>com.microsoft.playwright</groupId>
+      <artifactId>playwright</artifactId>
+      <version>1.52.0</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.seleniumhq.selenium</groupId>
+      <artifactId>selenium-java</artifactId>
+      <version>4.15.0</version>
+    </dependency>
 
     <!--
       可选依赖（默认不打包，走 full profile；运行期能力均做了无依赖降级）：
