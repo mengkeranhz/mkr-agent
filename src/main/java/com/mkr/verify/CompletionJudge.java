@@ -42,6 +42,17 @@ public final class CompletionJudge {
             return new Judgment(false, "存在未完成 TODO: " + String.join("; ", pending.stream().limit(3).toList())
                     + (pending.size() > 3 ? " 等 " + pending.size() + " 项" : ""));
         }
+        // 引用合规（硬性前置，任何策略生效；无外部内容自动豁免）
+        CitationVerifier.Check citation = CitationVerifier.check(ctx.messages().view(), answer);
+        if (!citation.ok()) {
+            return new Judgment(false, citation.reason());
+        }
+        // 数据一致性（引用合规之后、策略判定之前；无 TOOL 消息自动豁免）
+        DataConsistencyVerifier.CheckResult dataConsistency =
+                DataConsistencyVerifier.verify(ctx.messages().view(), answer, ctx.task());
+        if (!dataConsistency.passed()) {
+            return new Judgment(false, dataConsistency.reason());
+        }
         return switch (strategy) {
             case "exact" -> {
                 String expected = ctx.expectedAnswer();
@@ -74,13 +85,22 @@ public final class CompletionJudge {
         }
         String prompt = """
                 你是任务完成的独立评审（CompletionJudge）。依据任务与最终答复判断任务是否真正完成。
-                标准：答复直接回应任务要求、无关键遗漏、无与任务矛盾的断言。不要因为表述风格扣分。
+                标准：
+                1. 答复直接回应任务要求、无关键遗漏、无与任务矛盾的断言；
+                2. 引用外部检索的论断须带来源 URL 或标注「未溯源」；
+                3. 数值/时间/地点类结论须有工具结果支撑，不得凭记忆编造；
+                4. 若任务涉及多来源数据比较：不同口径的数值不得混为一表；若同比/环比数据与绝对值口径不同，须在答复中明确标注「挂牌均价同比暂缺，采用××口径替代」；
+                5. 若任务要求"计算"：答复须展示由两期同口径原始值出发的计算过程；若引用已公布的同比/环比结果，须明确标注为「引用发布值（非自行计算）」并说明原因与自洽验证，不得表述为"计算得出"；
+                6. 若同一指标多个来源差异显著（>20%），答复须说明原因并选择主口径；
+                7. 答复中由反推/推算得到的数值须显式标注推导性质（如「反推值，仅供参考，非××直接发布」），不得与来源直接发布的数值无差别混排；
+                8. 若答复列出多个来源做交叉验证：须明确比较各来源的趋势方向与相对排序是否一致，并说明对结论可靠性的影响；仅说"绝对值不同属正常"不充分。
+                不要因为表述风格扣分。
 
-                任务: %s
-                最终答复: %s
+                任务: """ + truncate(ctx.task(), 2000) + """
+                最终答复: """ + truncate(answer, 4000) + """
 
                 只输出一行 JSON（不要 markdown 代码块）: {"complete": true, "reason": "一句话理由"}
-                """.formatted(truncate(ctx.task(), 2000), truncate(answer, 4000));
+                """;
         try {
             LlmClient.ChatOptions opts = LlmClient.ChatOptions.of(model, 256, 0, false);
             LlmResponse resp = llm.chat(List.of(Message.user(prompt)), List.of(), opts);
