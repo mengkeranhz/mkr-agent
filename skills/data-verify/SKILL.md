@@ -6,8 +6,6 @@ dont-use-when: 单一来源的事实查询，或纯本地文件/代码任务
 
 # data-verify：多来源数据比对与交叉验证
 
-> 端到端真实案例（多平台房价比对：口径冲突、计算vs引用、矛盾取舍、方向性交叉验证）存档于 `references/housing-example.md`，可 `read_skill data-verify references/housing-example.md` 深读。
-
 ## 1. DataPoint：先结构化，再比较
 
 从每个来源提取的数据先整理为 DataPoint（在思考/草稿中按此结构逐字段填写，缺字段就回原文补查）：
