@@ -1,5 +1,10 @@
 package com.mkr.guard;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * 注入清洗：web/文件等外部内容统一包装来源标签、截断（≤50K token ≈ 200K chars）、
  * 去控制字符；记忆/skill 写入前做提示注入信任审查。
@@ -8,6 +13,9 @@ public final class InjectionSanitizer {
 
     /** ≈50K token（chars/4 启发式）。 */
     public static final int MAX_EXTERNAL_CHARS = 200_000;
+
+    /** source="…" 属性（&lt;external source="URL"&gt; 原始形式与折叠保留形式均匹配）。 */
+    private static final Pattern SOURCE_ATTR = Pattern.compile("source=\"([^\"]+)\"");
 
     private static final String[] SUSPICIOUS = {
             "ignore previous instructions", "ignore all previous", "disregard the above",
@@ -21,6 +29,35 @@ public final class InjectionSanitizer {
         String body = truncate(content == null ? "" : content, MAX_EXTERNAL_CHARS);
         return "<external source=\"" + (source == null ? "unknown" : source) + "\">\n"
                 + body + "\n</external>";
+    }
+
+    /** 提取内容中全部 source="…" 来源 URL（去重保序）；折叠/预览保留的形式同样可提取。 */
+    public static List<String> extractSources(String content) {
+        if (content == null || content.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        Matcher m = SOURCE_ATTR.matcher(content);
+        while (m.find()) {
+            String u = m.group(1).strip();
+            if (!u.isEmpty() && !out.contains(u)) {
+                out.add(u);
+            }
+        }
+        return out;
+    }
+
+    /** 压缩折叠/截断时保留来源：生成 {@code [folded-sources source="u1" source="u2"]}（空来源返回 ""）。 */
+    public static String retainedSources(String content) {
+        List<String> urls = extractSources(content);
+        if (urls.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("[folded-sources");
+        for (String u : urls) {
+            sb.append(" source=\"").append(u).append("\"");
+        }
+        return sb.append(']').toString();
     }
 
     public String truncate(String s, int maxChars) {

@@ -578,7 +578,10 @@ public interface Verifier { VerifyResult verify(ToolResult result, RunContext ct
 
 - `CompileVerifier`：`write/edit_file` 生成的 Java 源码跑 `javac`（或容器内 `mvn compile`），失败返回（文件+行+原因）。
 - `TestVerifier`：`mvn test`/`pytest`，汇总 pass/fail。
-- `CompletionJudge`：`final_answer` 独立判定（rubric / llm-as-judge / 无错误+无未完成 TODO）。**模型不能自我批准完成**。
+- `CompletionJudge`：`final_answer` 独立判定（rubric / llm-as-judge / 无错误+无未完成 TODO）。**模型不能自我批准完成**。判定前串联两个纯代码硬校验（无 TOOL 轨迹自动豁免）：
+  - `CitationVerifier`：答复中的 URL 必须来自工具结果来源白名单；用了外部检索却无任何来源标注 → 拒绝。
+  - `DataConsistencyVerifier`：① 任务要求"计算"时须有正向计算式（`(A-B)/B` 等；反推形 `X/(1±p)` 不算）或「引用××已公布值（非自行计算）」声明；② 答复中货币类数值须工具支撑/出现在计算式/带反推·估算标记（幽灵数值检测）；③ 多口径并存须说明口径差异；④ 同指标差异 >20% 须归因并选主口径（警告）。
+  - llm-as-judge 评审标准另含：引用发布值不得表述为"计算得出"、反推值须声明推导性质、多来源交叉验证须下方向/排序一致性结论。
 
 ### 5.8 恢复（recovery）
 

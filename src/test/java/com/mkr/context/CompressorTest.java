@@ -65,4 +65,34 @@ class CompressorTest {
         ml.markPrefix();
         assertTrue(!c.compressIfNeeded(ml));
     }
+
+    @Test
+    void externalSourcesSurviveCapAndFold() {
+        Compressor c = new Compressor(cfg(3_000, 1_000), tmp, null, "test");
+        // ① capToolOutput：预览（600 字符）之外的来源 URL 也必须保留
+        String big = "<external source=\"https://a.example.com/one\">\n" + "x".repeat(2_000)
+                + "\n</external>\n<external source=\"https://a.example.com/two\">\n" + "y".repeat(2_000) + "\n</external>";
+        String capped = c.capToolOutput("web_fetch", big);
+        assertTrue(capped.contains("source=\"https://a.example.com/two\""),
+                "预览外的来源必须以 [folded-sources] 保底: " + capped.substring(0, 120));
+
+        // ② tier2 fold：折叠行保留来源
+        MessageList ml = new MessageList();
+        ml.append(Message.system("S"));
+        ml.append(Message.user("T"));
+        ml.markPrefix();
+        for (int i = 0; i < 12; i++) {
+            ToolCall call = new ToolCall("id-" + i, "web_search", "{}");
+            ml.append(Message.assistant("", null, List.of(call)));
+            ml.append(Message.toolResult("id-" + i, "web_search",
+                    "搜索: q" + i + "\n<external source=\"https://s.example.com/" + i + "\">\n"
+                            + "detail ".repeat(200) + "\n</external>"));
+        }
+        c.compressIfNeeded(ml);
+        long kept = ml.suffix().stream()
+                .filter(m -> m.role() == Message.Role.TOOL)
+                .filter(m -> m.content().contains("[folded-sources"))
+                .count();
+        assertTrue(kept > 0, "折叠行应保留 source URL（引用链不断）");
+    }
 }
