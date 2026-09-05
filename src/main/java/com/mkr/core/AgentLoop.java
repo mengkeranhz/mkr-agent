@@ -214,7 +214,16 @@ public abstract class AgentLoop {
 
     private String renderResult(ToolCall call, ToolResult r) {
         String text = ctx.compressor().capToolOutput(call.name(), r.render());
-        return text.length() > 60_000 ? text.substring(0, 60_000) + "…[截断]" : text;
+        if (text.length() <= 60_000) {
+            return text;
+        }
+        String cut = text.substring(0, 60_000);
+        // 截断可能切断 <external> 块：补闭合标签，避免来源标记结构损坏
+        int lastOpen = cut.lastIndexOf("<external");
+        if (lastOpen >= 0 && cut.lastIndexOf("</external>") < lastOpen) {
+            cut += "\n</external>";
+        }
+        return cut + "…[截断]";
     }
 
     private AgentResult finish(AgentResult.Status status, String answer, String reason, int rounds, long start) {
@@ -436,6 +445,10 @@ public abstract class AgentLoop {
         sb.append(loop.strip()).append('\n');
         if (!extraInstruction().isBlank()) {
             sb.append('\n').append(extraInstruction().strip()).append('\n');
+        }
+        String webRules = ctx.prompts().get("web_rules"); // 外部信息纪律：全循环模式生效
+        if (!webRules.isBlank()) {
+            sb.append('\n').append(webRules.strip()).append('\n');
         }
         if (ctx.rolePrompt() != null && !ctx.rolePrompt().isBlank()) {
             sb.append("\n# 角色设定\n").append(ctx.rolePrompt().strip()).append('\n');

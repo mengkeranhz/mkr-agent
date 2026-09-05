@@ -159,6 +159,9 @@ public final class AppConfig {
         c.tools.webSearchMaxResults = i(ws, "max-results", c.tools.webSearchMaxResults);
         Map<String, Object> wf = m(tools, "web-fetch");
         c.tools.webFetchProvider = s(wf, "provider", c.tools.webFetchProvider);
+        Map<String, Object> rp = m(tools, "route-planner");
+        c.tools.routePlannerAmapKey = s(rp, "amap-key", c.tools.routePlannerAmapKey);
+        c.tools.routePlannerHeadless = b(rp, "headless", c.tools.routePlannerHeadless);
         Map<String, Object> sb = m(tools, "sandbox");
         c.tools.sandboxType = s(sb, "type", c.tools.sandboxType);
         c.tools.sandboxImage = s(sb, "image", c.tools.sandboxImage);
@@ -289,6 +292,10 @@ public final class AppConfig {
         public String webSearchApiKey = "";
         public int webSearchMaxResults = 5;
         public String webFetchProvider = "local";
+        /** 路线规划：高德开放平台 Key（空=浏览器降级，仍可用但仅首方案）；也可用环境变量 AMAP_KEY。 */
+        public String routePlannerAmapKey = "";
+        /** 路线规划：浏览器降级默认无头（高德对无头渲染有反爬风险，默认 false）。 */
+        public boolean routePlannerHeadless = false;
         public String sandboxType = "local";
         public String sandboxImage = "alpine:3.20";
         public String sandboxMemory = "2g";

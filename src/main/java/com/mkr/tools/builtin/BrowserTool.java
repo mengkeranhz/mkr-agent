@@ -1,6 +1,7 @@
 package com.mkr.tools.builtin;
 
 import com.mkr.core.RunContext;
+import com.mkr.guard.InjectionSanitizer;
 import com.mkr.tools.AgentTool;
 import com.mkr.tools.Risk;
 import com.mkr.tools.Tool;
@@ -20,6 +21,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.jsoup.Jsoup;
 
 /**
  * Browser（browser）：Selenium WebDriver 驱动。
@@ -33,6 +35,7 @@ public final class BrowserTool implements Tool {
 
     private static final Map<String, WebDriver> SESSIONS = new ConcurrentHashMap<>();
     private static final String SESSION_KEY = "default";
+    private final InjectionSanitizer sanitizer = new InjectionSanitizer();
 
     @Override
     public List<ToolParam> parameters() {
@@ -195,7 +198,8 @@ public final class BrowserTool implements Tool {
     }
 
     /**
-     * 获取页面内容（HTML）
+     * 获取页面内容：HTML → markdown 正文，统一包裹 &lt;external source=URL&gt; 来源标记
+     * （引用可溯源 + 注入防护，与 web_fetch 一致）。
      */
     private ToolResult getContent(Map<String, Object> params) {
         String url = ToolArgs.str(params, "url");
@@ -214,10 +218,14 @@ public final class BrowserTool implements Tool {
             String title = driver.getTitle();
             String currentUrl = driver.getCurrentUrl();
 
+            String markdown = HtmlToMarkdown.convert(Jsoup.parse(html, currentUrl));
+            if (markdown.isBlank()) {
+                markdown = html; // 正文提取失败降级为原始 HTML（由 sanitizer 截断）
+            }
             return ToolResult.ok("页面内容获取成功\n" +
                     "标题: " + title + "\n" +
                     "URL: " + currentUrl + "\n" +
-                    "--- HTML 内容 ---\n" + html);
+                    "--- 正文（markdown） ---\n" + sanitizer.wrap(markdown, currentUrl));
         } catch (Exception e) {
             return ToolResult.error("CONTENT_FAILED", "获取内容失败: " + e.getMessage());
         }

@@ -3,6 +3,7 @@ package com.mkr.context;
 import com.mkr.api.LlmClient;
 import com.mkr.api.LlmResponse;
 import com.mkr.api.Message;
+import com.mkr.guard.InjectionSanitizer;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -51,21 +52,24 @@ public final class Compressor {
         this.model = model;
     }
 
-    /** ① 工具输出上限：超阈值写盘，返回摘要行（含 artifact 路径与首行预览）。 */
+    /** ① 工具输出上限：超阈值写盘，返回摘要行（含 artifact 路径、首行预览与来源 URL 保底）。 */
     public String capToolOutput(String toolName, String output) {
         if (output == null || output.length() <= cfg.toolOutputThreshold()) {
             return output == null ? "" : output;
         }
+        String sources = InjectionSanitizer.retainedSources(output); // 引用链保底：预览外的 source=URL 也不丢
         try {
             Files.createDirectories(artifactsDir);
             String id = toolName.replaceAll("[^a-zA-Z0-9_-]", "_") + "-" + UUID.randomUUID().toString().substring(0, 8);
             Path file = artifactsDir.resolve(id + ".out");
             Files.writeString(file, output, StandardCharsets.UTF_8);
-            return "[%s 输出 %d 字符超过预算，已写盘 %s，可用 read_file 查看全文]\n%s"
-                    .formatted(toolName, output.length(), file, preview(output, 600));
+            return "[%s 输出 %d 字符超过预算，已写盘 %s，可用 read_file 查看全文]\n%s%s"
+                    .formatted(toolName, output.length(), file, preview(output, 600),
+                            sources.isEmpty() ? "" : "\n" + sources);
         } catch (IOException e) {
             // 写盘失败降级为硬截断
-            return "[" + toolName + " 输出超预算且写盘失败，硬截断]\n" + preview(output, cfg.toolOutputThreshold());
+            return "[" + toolName + " 输出超预算且写盘失败，硬截断]\n" + preview(output, cfg.toolOutputThreshold())
+                    + (sources.isEmpty() ? "" : "\n" + sources);
         }
     }
 
@@ -150,7 +154,10 @@ public final class Compressor {
         if (head.length() > 100) {
             head = head.substring(0, 100) + "…";
         }
-        return "[tool " + m.toolName() + " " + (failed ? "fail" : "ok") + "] " + head;
+        // 折叠不丢引用链：保留全部 source="URL"（供最终答复标注来源）
+        String sources = InjectionSanitizer.retainedSources(c);
+        return "[tool " + m.toolName() + " " + (failed ? "fail" : "ok") + "] " + head
+                + (sources.isEmpty() ? "" : " " + sources);
     }
 
     /** ③ 归档：中段原文追加 .archive.log，轨迹内替换为规则摘要消息。 */
@@ -210,7 +217,7 @@ public final class Compressor {
                 压缩以下 Agent 执行轨迹。要求：
                 1. 保留：任务目标、架构决策、关键约束、变更记录、验证状态、未解决 TODO；
                 2. 丢弃：工具输出细节（只留 pass/fail 与结论）；
-                3. UUID/hash/URL/文件名/命令原样保留，不得改写；
+                3. UUID/hash/URL/文件名/命令原样保留，不得改写；<external> 的 source URL 必须逐个保留；
                 4. 输出不超过 400 字。
 
                 轨迹:

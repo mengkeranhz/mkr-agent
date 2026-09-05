@@ -27,6 +27,7 @@
     <otel.version>1.41.0</otel.version>
     <reflections.version>0.10.2</reflections.version>
     <junit.version>5.10.2</junit.version>
+    <selenium.version>4.48.0</selenium.version>
   </properties>
 
   <dependencies>
@@ -72,6 +73,12 @@
       <artifactId>jsoup</artifactId>
       <version>${jsoup.version}</version>
     </dependency>
+    <!-- BrowserTool 截图落盘 -->
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.16.1</version>
+    </dependency>
 
     <!-- 可观测（OTLP 导出） -->
     <dependency>
@@ -110,7 +117,13 @@
     <dependency>
       <groupId>org.seleniumhq.selenium</groupId>
       <artifactId>selenium-java</artifactId>
-      <version>4.15.0</version>
+      <version>${selenium.version}</version>
+    </dependency>
+    <!-- 对齐本机 Chrome 152 的 CDP 实现，消除 CdpVersionFinder 警告 -->
+    <dependency>
+      <groupId>org.seleniumhq.selenium</groupId>
+      <artifactId>selenium-devtools-v152</artifactId>
+      <version>${selenium.version}</version>
     </dependency>
 
     <!--
@@ -138,7 +151,7 @@
         <dependency>
           <groupId>com.microsoft.playwright</groupId>
           <artifactId>playwright</artifactId>
-          <version>1.45.0</version>
+          <version>1.52.0</version>
         </dependency>
       </dependencies>
     </profile>
