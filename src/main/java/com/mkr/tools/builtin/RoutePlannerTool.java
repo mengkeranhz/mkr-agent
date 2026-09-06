@@ -239,7 +239,7 @@ public final class RoutePlannerTool implements Tool {
         sb.append("─".repeat(44)).append('\n');
         sb.append("⭐ 推荐: ").append(RoutePlan.modeLabel(best.mode())).append(best.summary());
         if (webSource) {
-            sb.append('\n').append("（数据源: 高德网页渲染，未配置 AMAP_KEY，仅首方案；配置后可获多方案+费用明细）");
+            sb.append('\n').append("（数据源: 高德网页渲染，未配置 AMAP_KEY，解析自页面主/备选卡片，驾车费用等明细有限；配置后可获官方多方案+精确费用）");
         }
         return sb.toString();
     }

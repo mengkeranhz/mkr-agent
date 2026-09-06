@@ -53,6 +53,7 @@ public final class CompletionJudge {
         if (!dataConsistency.passed()) {
             return new Judgment(false, dataConsistency.reason());
         }
+        List<String> dataWarnings = dataConsistency.warnings();
         return switch (strategy) {
             case "exact" -> {
                 String expected = ctx.expectedAnswer();
@@ -74,22 +75,26 @@ public final class CompletionJudge {
                         ? new Judgment(true, "rubric 全部命中")
                         : new Judgment(false, "rubric 未命中: " + String.join("; ", missing));
             }
-            case "llm-as-judge" -> llmJudge(ctx, answer);
+            case "llm-as-judge" -> llmJudge(ctx, answer, dataWarnings);
             default -> new Judgment(true, "启发式判定通过（无错误、无未完成 TODO、答案非空）");
         };
     }
 
-    private Judgment llmJudge(RunContext ctx, String answer) {
+    private Judgment llmJudge(RunContext ctx, String answer, List<String> dataWarnings) {
         if (llm == null) {
             return new Judgment(true, "（无 LLM 可用，启发式通过）");
         }
+        // 数据一致性警告（如多来源差异未归因）：非阻断，作为评审线索
+        String warnNote = dataWarnings.isEmpty()
+                ? ""
+                : "\n数据一致性提示（非阻断，供综合判断）: " + String.join("；", dataWarnings) + "\n";
         String prompt = """
                 你是任务完成的独立评审（CompletionJudge）。依据任务与最终答复判断任务是否真正完成。
                 标准：
                 1. 答复直接回应任务要求、无关键遗漏、无与任务矛盾的断言；
                 2. 引用外部检索的论断须带来源 URL 或标注「未溯源」；
                 3. 数值/时间/地点类结论须有工具结果支撑，不得凭记忆编造；
-                4. 若任务涉及多来源数据比较：不同口径的数值不得混为一表；若同比/环比数据与绝对值口径不同，须在答复中明确标注「挂牌均价同比暂缺，采用××口径替代」；
+                4. 若任务涉及多来源数据比较：不同口径的数值不得混为一表；若同比/环比数据与绝对值口径不同，须在答复中明确标注「××口径同比暂缺，采用××口径替代」；
                 5. 若任务要求"计算"：答复须展示由两期同口径原始值出发的计算过程；若引用已公布的同比/环比结果，须明确标注为「引用发布值（非自行计算）」并说明原因与自洽验证，不得表述为"计算得出"；
                 6. 若同一指标多个来源差异显著（>20%），答复须说明原因并选择主口径；
                 7. 答复中由反推/推算得到的数值须显式标注推导性质（如「反推值，仅供参考，非××直接发布」），不得与来源直接发布的数值无差别混排；
@@ -97,7 +102,7 @@ public final class CompletionJudge {
                 不要因为表述风格扣分。
 
                 任务: """ + truncate(ctx.task(), 2000) + """
-                最终答复: """ + truncate(answer, 4000) + """
+                最终答复: """ + truncate(answer, 4000) + warnNote + """
 
                 只输出一行 JSON（不要 markdown 代码块）: {"complete": true, "reason": "一句话理由"}
                 """;

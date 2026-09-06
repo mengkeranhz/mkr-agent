@@ -228,6 +228,109 @@ class DataConsistencyVerifierTest {
         assertTrue(r.passed());
     }
 
+    // ---- 泛化：跨领域单位与匹配 ----
+
+    @Test
+    void generalUnit_countGhost_fails() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("2026年8月 活跃用户 1.2万人")),
+                "活跃用户 1.5万人。",
+                "查询活跃用户数"
+        );
+        // 1.5万 既无工具支撑也无近似/推导标注 → 幽灵数值（计数类单位同样受检）
+        assertFalse(r.passed());
+    }
+
+    @Test
+    void generalUnit_countWithApproxWord_passes() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("2026年8月 活跃用户 1.2万人")),
+                "活跃用户约 1.5 万人。",
+                "查询活跃用户数"
+        );
+        // 「约」紧邻数值 → 豁免
+        assertTrue(r.passed());
+    }
+
+    @Test
+    void commonCompoundWord_notExemption_ghostStillCaught() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("2026年8月 活跃用户 12000人")),
+                "预约人数 15,000 人。",
+                "查询活跃用户数"
+        );
+        // 「预约」中的「约」不得当作近似词放行
+        assertFalse(r.passed());
+    }
+
+    @Test
+    void unitConversion_wanBackedByBase_passes() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("北京 2026年8月 挂牌均价 54631元/㎡")),
+                "北京挂牌均价 5.5 万元/㎡。",
+                "查询北京挂牌均价"
+        );
+        // 5.5万 在 54631 的 1% 相对容差内 → 视为有工具支撑
+        assertTrue(r.passed());
+    }
+
+    // ---- 泛化：冲突分组与口径 ----
+
+    @Test
+    void differentPeriods_noConflictWarning() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(
+                        tool("北京 2025年8月 挂牌均价 30000元/㎡"),
+                        tool("北京 2026年8月 挂牌均价 54631元/㎡")
+                ),
+                "北京挂牌均价 54631元/㎡，同比大涨。",
+                "查询北京挂牌均价"
+        );
+        // 跨期涨跌不是矛盾：按 单位+口径+时间 分组后不告警
+        assertTrue(r.passed());
+        assertTrue(r.warnings().isEmpty(), "跨期数据不构成矛盾: " + r.warnings());
+    }
+
+    @Test
+    void modifierNotTreatedAsCaliber_passes() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("CREIS 2026年8月 北京样本平均价格 61038元/㎡ 同比 -8.78%")),
+                "北京 2026年8月 均价 61038元/㎡，同比 -8.78%。",
+                "查询北京二手房均价"
+        );
+        // 同比/环比是指标修饰语而非口径：单口径不应要求答复说明「口径」
+        assertTrue(r.passed());
+    }
+
+    @Test
+    void crossDomainCaliber_retailVsWholesale_fails() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(
+                        tool("某手机 2026年8月 零售价 5999元"),
+                        tool("某手机 2026年8月 批发价 4300元")
+                ),
+                "某手机售价 5999元。",
+                "查询某手机价格"
+        );
+        // 零售价 vs 批发价：非房价领域同样检测多口径
+        assertFalse(r.passed());
+        assertTrue(r.reason().contains("口径"));
+    }
+
+    // ---- 泛化：英文任务词 ----
+
+    @Test
+    void englishCalcTask_checked() {
+        var r = DataConsistencyVerifier.verify(
+                List.of(tool("Beijing avg price 2026-08: 54631元/㎡; 2025-08: 57000元/㎡")),
+                "It fell 4.2%.",
+                "Calculate the year-over-year drop"
+        );
+        // 英文任务词同样触发计算校验
+        assertFalse(r.passed());
+        assertTrue(r.reason().contains("引用"));
+    }
+
     // ---- 数据点提取 ----
 
     @Test
