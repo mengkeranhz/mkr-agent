@@ -292,7 +292,7 @@ public final class AppConfig {
         public String webSearchApiKey = "";
         public int webSearchMaxResults = 5;
         public String webFetchProvider = "local";
-        /** 路线规划：高德开放平台 Key（空=浏览器降级，仍可用但仅首方案）；也可用环境变量 AMAP_KEY。 */
+        /** 路线规划：高德开放平台 Key（空=LLM 名称纠错兜底 + 浏览器降级，高德站内解析名称）；也可用环境变量 AMAP_KEY。 */
         public String routePlannerAmapKey = "";
         /** 路线规划：浏览器降级默认无头（高德对无头渲染有反爬风险，默认 false）。 */
         public boolean routePlannerHeadless = false;

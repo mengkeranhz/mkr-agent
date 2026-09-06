@@ -77,6 +77,79 @@ class RoutePlannerComponentsTest {
         assertTrue(GeocodeResolver.parsePois("{\"status\":\"0\",\"infocode\":\"10001\"}").isEmpty());
     }
 
+    // ---------------- LlmNameResolver：LLM 响应解析 / 无 Key 选择与确认 ----------------
+
+    @Test
+    void parseLlmCandidatesWithFencesAndConservativeConfidence() {
+        String resp = "```json\n[\n"
+                + " {\"name\":\"灵隐寺\",\"city\":\"杭州\",\"confidence\":0.9},\n"
+                + " {\"name\":\"灵隐寺\",\"city\":\"杭州\",\"district\":\"西湖区\",\"confidence\":0.85}\n"
+                + "]\n```";
+        List<GeoLocation> c = LlmNameResolver.parseCandidates(resp, "灵隐ssi", "杭州");
+        // 2 个改写候选 + 兜底保留的原输入
+        assertEquals(3, c.size());
+        assertTrue(c.stream().anyMatch(l -> l.name().equals("灵隐ssi")));
+        assertEquals("灵隐寺", c.get(0).name());
+        assertEquals("杭州", c.get(0).city());
+        assertNull(c.get(0).lngLat()); // LLM 兜底不产坐标
+        // 置信度 = min(名称相似度, LLM 自评)：错字改写相似度低 → 整体低于自评且不自动选中
+        assertTrue(c.get(0).confidence() < 0.9);
+        assertTrue(c.get(0).confidence() < GeocodeResolver.AUTO_SELECT_THRESHOLD);
+        // 已按置信度降序
+        assertTrue(c.get(0).confidence() >= c.get(1).confidence());
+    }
+
+    @Test
+    void parseLlmCandidatesAppendsRawInputWhenMissing() {
+        // LLM 只给了改写名、没保留原输入 → 补低置信度「维持原输入」候选
+        List<GeoLocation> c = LlmNameResolver.parseCandidates(
+                "[{\"name\":\"上海虹桥火车站\",\"city\":\"上海\",\"confidence\":0.95}]", "虹桥", null);
+        assertEquals(2, c.size());
+        assertTrue(c.stream().anyMatch(l -> l.name().equals("虹桥")));
+        assertTrue(c.stream().filter(l -> l.name().equals("虹桥")).findFirst().orElseThrow()
+                .confidence() < GeocodeResolver.AUTO_SELECT_THRESHOLD);
+        // LLM 已含原输入时不重复补
+        List<GeoLocation> kept = LlmNameResolver.parseCandidates(
+                "[{\"name\":\"杭州东站\",\"city\":\"杭州\",\"confidence\":0.98}]", "杭州东站", null);
+        assertEquals(1, kept.size());
+    }
+
+    @Test
+    void parseLlmCandidatesGarbageReturnsEmpty() {
+        assertTrue(LlmNameResolver.parseCandidates("抱歉，我无法理解。", "杭州东站", null).isEmpty());
+        assertTrue(LlmNameResolver.parseCandidates("[]", "杭州东站", null).isEmpty());
+        assertTrue(LlmNameResolver.parseCandidates(null, "杭州东站", null).isEmpty());
+    }
+
+    @Test
+    void selectThresholdsAndCache() {
+        GeocodeResolver r = new GeocodeResolver(null, "");
+        GeoLocation high = new GeoLocation("杭州东站", "浙江省杭州市杭州东站",
+                null, "杭州", null, null, null);
+        high.setConfidence(0.95);
+        assertEquals(high, r.select("杭州东站", "杭州", List.of(high)).selected());
+
+        GeoLocation low = GeoLocation.nameOnly("虹桥");
+        low.setConfidence(0.6);
+        GeocodeResolver.Outcome o = r.select("虹桥", null, List.of(low));
+        assertTrue(o.needConfirmation());
+        assertEquals(List.of(low), o.candidates());
+
+        assertTrue(r.select("啥地方", null, List.of()).notFound());
+    }
+
+    @Test
+    void confirmWithoutKeyTrustsConfirmedNameAndCaches() {
+        GeocodeResolver r = new GeocodeResolver(null, "");
+        GeocodeResolver.Outcome o = r.confirm("灵隐ssi", "灵隐寺", "杭州", null);
+        assertEquals("灵隐寺", o.selected().name());
+        assertEquals(1.0, o.selected().confidence(), 1e-9);
+        assertNull(o.selected().lngLat()); // 坐标交路线页解析
+        // 确认缓存生效：同输入再解析直接命中，无需再确认
+        GeocodeResolver.Outcome again = r.select("灵隐ssi", "杭州", List.of());
+        assertEquals("灵隐寺", again.selected().name());
+    }
+
     // ---------------- RouteFetcher：渲染页文本提取 ----------------
 
     @Test
