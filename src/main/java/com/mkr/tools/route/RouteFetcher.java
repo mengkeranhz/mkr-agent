@@ -7,8 +7,11 @@ import org.jsoup.Jsoup;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,15 +20,33 @@ import java.util.regex.Pattern;
  * 失败或无 Key 降级到浏览器渲染页（复用 BrowserTool 同一会话，Anti-bot 友好）。
  *
  * <p>浏览器路径解析已验证的 ditu.amap.com/dir 路线页：{@code from[name]/to[name]}
- * 由高德站内自行解析地名，渲染后的路线卡片文本含「xx.x公里 / xx分钟」。</p>
+ * 由高德站内自行解析地名；主方案与「备选方案」卡片均含「xx.x公里 / xx分钟」文本，
+ * 按邻近配对逐卡提取全部线路（见 {@link #parsePlans}）。</p>
  */
 public final class RouteFetcher {
 
     private static final Pattern KILOMETERS = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*公里");
     private static final Pattern METERS = Pattern.compile("(\\d+)\\s*米");
     private static final Pattern HOUR_MIN = Pattern.compile("(\\d+)\\s*小时(?:\\s*(\\d+)\\s*分(?:钟)?)?");
-    private static final Pattern MINUTES = Pattern.compile("(\\d+)\\s*分(?:钟)?");
+    private static final Pattern MINUTES = Pattern.compile("(\\d+)\\s*分(?!积)(?:钟)?");
     private static final Pattern YUAN = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*元");
+    private static final Pattern TRANSFERS = Pattern.compile("换乘\\s*(\\d+)\\s*次");
+    /** 卡片策略标签（备选卡区分维度，展示用）。 */
+    private static final Pattern STRATEGY = Pattern.compile(
+            "推荐方案|红绿灯少|避开拥堵|拥堵少|时间短|距离短|少花钱|步行少|换乘少|少换乘");
+    /** 导航分段语句结尾动词（「沿xx路行驶1.2公里」「步行450米」）：是步骤不是卡片。 */
+    private static final Pattern STEP_HINT =
+            Pattern.compile("(行驶|步行|骑行|驾车|直行|左转|右转|掉头|进入|靠左|靠右)$");
+
+    /** 距离↔耗时 邻近配对窗口（字符）：同一卡片内两者紧邻，跨卡片必超窗。 */
+    private static final int PAIR_WINDOW = 16;
+    /** 卡片尾部（票价/换乘/策略标签）扫描窗口（字符）。 */
+    private static final int CARD_TAIL_WINDOW = 24;
+    /** 网页解析方案数上限（防御结构异常的页面）。 */
+    private static final int MAX_WEB_PLANS = 5;
+
+    /** 文本数值匹配（位置用于卡片邻近配对）。 */
+    private record Num(long value, int start, int end) {}
 
     private final AmapRouteClient api;
     private final BrowserTool browser = new BrowserTool();
@@ -72,7 +93,7 @@ public final class RouteFetcher {
         return fetchViaBrowser(from, to, mode, headless, waitMs);
     }
 
-    /** 浏览器降级：ditu.amap.com/dir 路线页 → 渲染文本提取距离/耗时（取首条主方案）。 */
+    /** 浏览器降级：ditu.amap.com/dir 路线页 → 渲染文本逐卡解析全部线路（主方案在前、备选方案在后）。 */
     private List<RoutePlan> fetchViaBrowser(GeoLocation from, GeoLocation to, String mode,
                                             boolean headless, int waitMs) throws Exception {
         String url = "https://ditu.amap.com/dir?type=" + amapType(mode) + "&policy=2"
@@ -90,17 +111,24 @@ public final class RouteFetcher {
             throw new IllegalStateException("页面内容获取失败: " + content.render());
         }
         String html = content.output();
-        int marker = html.indexOf("--- HTML 内容 ---");
+        int marker = html.indexOf("--- 正文（markdown） ---");
+        if (marker < 0) {
+            marker = html.indexOf("--- HTML 内容 ---"); // 旧版 BrowserTool 输出标记
+        }
         String text = Jsoup.parse(marker >= 0 ? html.substring(marker) : html).text();
 
+        List<RoutePlan> plans = parsePlans(text, mode);
+        if (!plans.isEmpty()) {
+            return plans;
+        }
+        // 逐卡配对失败（页面残缺/结构改版）→ 单值提取兜底：只渲染出距离或耗耗时仍返回一条
         long distM = firstDistanceMeters(text);
         long durSec = firstDurationSec(text);
         if (distM <= 0 && durSec <= 0) {
             throw new IllegalStateException("页面未渲染出路线，正文片段: " + snippet(text));
         }
         Double cost = "bus".equals(mode) ? firstCost(text) : null;
-        RoutePlan plan = new RoutePlan(mode, Math.max(durSec, 60), distM, cost, 0, "", "amap-web");
-        return List.of(plan);
+        return List.of(new RoutePlan(mode, Math.max(durSec, 60), distM, cost, 0, "", "amap-web"));
     }
 
     private static String amapType(String mode) {
@@ -158,6 +186,141 @@ public final class RouteFetcher {
     static Double firstCost(String text) {
         Matcher y = YUAN.matcher(text);
         return y.find() ? Double.parseDouble(y.group(1)) : null;
+    }
+
+    // ---------------- 渲染页多卡片解析 ----------------
+
+    /**
+     * 渲染文本 → 全部路线卡（主方案在前、备选方案在后）：距离与耗时成对且邻近才算一张卡，
+     * 比例尺/导航分段距离等孤立数值不会误入；同一卡片重复渲染（侧栏+浮层）按（耗时, 距离）去重。
+     * bus 备选卡常不显示距离（仅 耗时+换乘/票价），允许距离未知。
+     */
+    static List<RoutePlan> parsePlans(String text, String mode) {
+        List<Num> durs = durationNums(text);
+        List<Num> dists = distanceNums(text);
+        Set<Num> paired = new HashSet<>();
+        List<RoutePlan> plans = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < durs.size() && plans.size() < MAX_WEB_PLANS; i++) {
+            Num dur = durs.get(i);
+            Num dist = nearestUnpaired(dists, paired, dur.start());
+            if (dist == null && !busCardHint(text, dur)) {
+                continue;
+            }
+            if (dist != null) {
+                paired.add(dist);
+            }
+            if (!seen.add(dur.value() + "/" + (dist == null ? -1 : dist.value()))) {
+                continue;
+            }
+            int limit = i + 1 < durs.size() ? durs.get(i + 1).start() : text.length();
+            plans.add(cardPlan(mode, dur, dist, text, limit));
+        }
+        return plans;
+    }
+
+    /** 距目标位置最近且未配对的距离（超窗口视为他卡数值，返回 null）。 */
+    private static Num nearestUnpaired(List<Num> dists, Set<Num> paired, int pos) {
+        Num best = null;
+        int bestGap = PAIR_WINDOW + 1;
+        for (Num d : dists) {
+            if (paired.contains(d)) {
+                continue;
+            }
+            int gap = Math.abs(d.start() - pos);
+            if (gap <= PAIR_WINDOW && gap < bestGap) {
+                best = d;
+                bestGap = gap;
+            }
+        }
+        return best;
+    }
+
+    /** bus 卡可能只显示 耗时+换乘/票价（无距离）：有换乘/票价佐证才算卡，防孤立耗时噪声。 */
+    private static boolean busCardHint(String text, Num dur) {
+        String seg = text.substring(dur.start(), Math.min(text.length(), dur.end() + CARD_TAIL_WINDOW));
+        return TRANSFERS.matcher(seg).find() || seg.contains("票价");
+    }
+
+    /** 由配对数值构造卡片方案：bus 取票价/换乘；驾车网页打车价≠过路费，不取费用。 */
+    private static RoutePlan cardPlan(String mode, Num dur, Num dist, String text, int limit) {
+        long distM = dist == null ? -1 : dist.value();
+        int lastEnd = dist == null ? dur.end() : Math.max(dur.end(), dist.end());
+        String seg = text.substring(dur.start(),
+                Math.min(text.length(), Math.min(lastEnd + CARD_TAIL_WINDOW, limit)));
+        Double cost = null;
+        int transfers = 0;
+        if ("bus".equals(mode)) {
+            Matcher y = YUAN.matcher(seg);
+            cost = y.find() ? Double.parseDouble(y.group(1)) : null;
+            Matcher t = TRANSFERS.matcher(seg);
+            transfers = t.find() ? Integer.parseInt(t.group(1)) : 0;
+        }
+        Matcher s = STRATEGY.matcher(seg);
+        String strategy = s.find() ? s.group() : "";
+        return new RoutePlan(mode, Math.max(dur.value(), 60), distM, cost, transfers, strategy, "amap-web");
+    }
+
+    /** 全部可信耗时（按位置排序；「1小时25分钟」中的「25分钟」不重复计数）。 */
+    static List<Num> durationNums(String text) {
+        List<Num> all = new ArrayList<>();
+        Matcher hm = HOUR_MIN.matcher(text);
+        while (hm.find()) {
+            long h = Long.parseLong(hm.group(1));
+            long min = hm.group(2) == null ? 0 : Long.parseLong(hm.group(2));
+            long total = h * 60 + min;
+            if (total >= 1 && total <= 3000) {
+                all.add(new Num(total * 60, hm.start(), hm.end()));
+            }
+        }
+        Matcher m = MINUTES.matcher(text);
+        while (m.find()) {
+            long v = Long.parseLong(m.group(1));
+            if (v >= 1 && v <= 3000) {
+                all.add(new Num(v * 60, m.start(), m.end()));
+            }
+        }
+        all.sort(Comparator.comparingInt(Num::start));
+        List<Num> out = new ArrayList<>();
+        int lastEnd = -1;
+        for (Num n : all) {
+            if (n.start() >= lastEnd) {
+                out.add(n);
+                lastEnd = n.end();
+            }
+        }
+        return out;
+    }
+
+    /** 全部可信距离（按位置排序；导航分段距离「沿xx行驶1.2公里」「步行450米」不算卡片）。 */
+    static List<Num> distanceNums(String text) {
+        List<Num> out = new ArrayList<>();
+        Matcher km = KILOMETERS.matcher(text);
+        while (km.find()) {
+            double v = Double.parseDouble(km.group(1));
+            if (v >= 0.1 && v <= 5000 && !stepPrefix(text, km.start())) {
+                out.add(new Num(Math.round(v * 1000), km.start(), km.end()));
+            }
+        }
+        Matcher m = METERS.matcher(text);
+        while (m.find()) {
+            long v = Long.parseLong(m.group(1));
+            if (v >= 100 && v <= 100_000 && !stepPrefix(text, m.start())) {
+                out.add(new Num(v, m.start(), m.end()));
+            }
+        }
+        out.sort(Comparator.comparingInt(Num::start));
+        return out;
+    }
+
+    /** 距离数值紧贴导航动词且无空白分隔 → 转向步骤的分段距离，不是路线卡。 */
+    private static boolean stepPrefix(String text, int start) {
+        if (start == 0) {
+            return false;
+        }
+        String before = text.substring(Math.max(0, start - 9), start);
+        return !Character.isWhitespace(before.charAt(before.length() - 1))
+                && STEP_HINT.matcher(before).find();
     }
 
     static String snippet(String s) {

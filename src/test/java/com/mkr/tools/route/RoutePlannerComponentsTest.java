@@ -103,6 +103,55 @@ class RoutePlannerComponentsTest {
         assertNull(RouteFetcher.firstCost("没有票价信息"));
     }
 
+    @Test
+    void parseAllRouteCardsFromRenderedText() {
+        String text = "高德地图 收藏 100米 比例尺 驾车 全程约59分钟 38.5公里 红绿灯少 打车约110元 "
+                + "备选方案 1小时5分钟 40.2公里 打车约120元";
+        List<RoutePlan> plans = RouteFetcher.parsePlans(text, "car");
+        assertEquals(2, plans.size());
+        assertEquals(38_500, plans.get(0).distanceMeters());
+        assertEquals(59 * 60, plans.get(0).durationSec());
+        assertEquals("红绿灯少", plans.get(0).description());
+        assertNull(plans.get(0).costYuan()); // 打车价≠过路费，驾车不取网页费用
+        assertEquals(40_200, plans.get(1).distanceMeters());
+        assertEquals(65 * 60, plans.get(1).durationSec());
+        assertTrue(plans.stream().allMatch(p -> "amap-web".equals(p.source())));
+    }
+
+    @Test
+    void parseSkipsStepFragmentsAndStrayValues() {
+        // 分段距离（行驶1.2公里/步行450米）、孤立耗时（等待30分钟）、积分均不构成卡片
+        String text = "100米 比例尺 签到得10积分 等待30分钟 沿文一西路行驶1.2公里右转 步行450米 "
+                + "全程约59分钟 38.5公里 备选方案 1小时5分钟 40.2公里";
+        List<RoutePlan> plans = RouteFetcher.parsePlans(text, "car");
+        assertEquals(2, plans.size());
+        assertEquals(38_500, plans.get(0).distanceMeters());
+        assertEquals(40_200, plans.get(1).distanceMeters());
+    }
+
+    @Test
+    void parseBusCardsWithFareTransfersAndMissingDistance() {
+        String text = "公交 1小时5分钟 32.5公里 票价4元 换乘1次 备选方案 48分钟 换乘1次 票价2元 步行少";
+        List<RoutePlan> plans = RouteFetcher.parsePlans(text, "bus");
+        assertEquals(2, plans.size());
+        assertEquals(32_500, plans.get(0).distanceMeters());
+        assertEquals(4.0, plans.get(0).costYuan());
+        assertEquals(1, plans.get(0).transfers());
+        // 备选公交卡常不显示距离 → 距离未知但仍保留耗时/票价/换乘
+        assertEquals(-1, plans.get(1).distanceMeters());
+        assertEquals(48 * 60, plans.get(1).durationSec());
+        assertEquals(2.0, plans.get(1).costYuan());
+        assertEquals(1, plans.get(1).transfers());
+    }
+
+    @Test
+    void parseDedupsRepeatedCardRenderings() {
+        // 同一卡片在侧栏与浮层重复渲染，只保留一条
+        String text = "59分钟 38.5公里 59分钟 38.5公里 1小时5分钟 40.2公里";
+        List<RoutePlan> plans = RouteFetcher.parsePlans(text, "car");
+        assertEquals(2, plans.size());
+    }
+
     // ---------------- RoutePlan 文本派生 ----------------
 
     @Test
