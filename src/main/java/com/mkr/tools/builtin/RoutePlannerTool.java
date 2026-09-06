@@ -9,6 +9,7 @@ import com.mkr.tools.ToolParam;
 import com.mkr.tools.ToolResult;
 import com.mkr.tools.route.GeoLocation;
 import com.mkr.tools.route.GeocodeResolver;
+import com.mkr.tools.route.LlmNameResolver;
 import com.mkr.tools.route.RouteFetcher;
 import com.mkr.tools.route.RoutePlan;
 import com.mkr.tools.route.RouteScorer;
@@ -27,7 +28,9 @@ import java.util.Map;
  *
  * <p>地名歧义时不直接失败：返回候选列表 + 置信度，Agent 据上下文选定后携带
  * {@code origin_confirmed}/{@code destination_confirmed} 重调（修订版 §六 交互流程）。
- * 无 API Key 时跳过解析，名称直传路线页（高德站内解析），结果仍真实可用。</p>
+ * 无 API Key 时先走 LLM 名称纠错/消歧兜底（{@link LlmNameResolver}，不产坐标，
+ * 路线页仍是最终仲裁），LLM 不可用或无候选则名称直传路线页（高德站内解析），
+ * 结果仍真实可用。</p>
  */
 @AgentTool(name = "route_planner",
         description = "路线规划：起点→终点查询驾车/公交/步行路线（距离、耗时、费用、路线概要、加权推荐）。Use when: 查两地路线/通勤方案/出行对比；Don't use when: 只查地点信息用 web_search。地名有歧义时返回候选列表，需带 origin_confirmed/destination_confirmed 重新调用。",
@@ -81,6 +84,7 @@ public final class RoutePlannerTool implements Tool {
 
         String key = apiKey(ctx);
         ensureClients(key);
+        LlmNameResolver llmNames = resolver.hasKey() ? null : LlmNameResolver.of(ctx);
 
         // ── 地名解析（v2 §四：起点 → 终点，歧义即返回候选列表）──────────────
         GeoLocation from;
@@ -98,13 +102,17 @@ public final class RoutePlannerTool implements Tool {
             }
             from = o.selected();
         } else {
-            from = GeoLocation.nameOnly(origin);
+            GeocodeResolver.Outcome o = resolveViaLlm(origin, ToolArgs.str(params, "origin_confirmed"), city, llmNames);
+            if (o != null && o.needConfirmation()) {
+                return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
+            }
+            from = o == null || o.notFound() ? GeoLocation.nameOnly(origin) : o.selected();
         }
 
         GeoLocation to;
+        String destConfirmed = ToolArgs.str(params, "destination_confirmed");
+        String cityHint = city != null && !city.isBlank() ? city : from.city();
         if (resolver.hasKey()) {
-            String destConfirmed = ToolArgs.str(params, "destination_confirmed");
-            String cityHint = city != null && !city.isBlank() ? city : from.city();
             GeocodeResolver.Outcome o = destConfirmed == null || destConfirmed.isBlank()
                     ? resolver.resolve(destination, cityHint)
                     : resolver.confirm(destination, destConfirmed, cityHint);
@@ -117,7 +125,11 @@ public final class RoutePlannerTool implements Tool {
             }
             to = o.selected();
         } else {
-            to = GeoLocation.nameOnly(destination);
+            GeocodeResolver.Outcome o = resolveViaLlm(destination, destConfirmed, cityHint, llmNames);
+            if (o != null && o.needConfirmation()) {
+                return ToolResult.ok(confirmationText("destination", destination, o.candidates()), confirmationData("destination", destination, o.candidates()));
+            }
+            to = o == null || o.notFound() ? GeoLocation.nameOnly(destination) : o.selected();
         }
 
         // ── 路线抓取 + 评分推荐 ─────────────────────────────────────────────
@@ -152,6 +164,20 @@ public final class RoutePlannerTool implements Tool {
     }
 
     // ---------------- 内部 ----------------
+
+    /**
+     * 无 Key 的 LLM 兜底解析：null = LLM 不可用（原名直传）；
+     * notFound = LLM 无候选（同样退回原名直传，路线页终裁）。
+     */
+    private GeocodeResolver.Outcome resolveViaLlm(String input, String confirmed,
+                                                  String cityHint, LlmNameResolver llmNames) {
+        if (llmNames == null) {
+            return null;
+        }
+        return confirmed == null || confirmed.isBlank()
+                ? resolver.select(input, cityHint, llmNames.candidates(input, cityHint))
+                : resolver.confirm(input, confirmed, cityHint, llmNames);
+    }
 
     private String apiKey(RunContext ctx) {
         String fromCfg = ctx != null && ctx.config() != null ? ctx.config().tools.routePlannerAmapKey : null;

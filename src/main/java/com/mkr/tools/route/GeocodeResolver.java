@@ -20,7 +20,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Level 1：高德 place/text POI 搜索（需 Key，返回多候选+置信度）；
  * Level 2：Agent 确认重调（{@code confirm}，确认结果进程内缓存）；
- * 无 Key 时由 RoutePlannerTool 直接走浏览器降级（路线页内高德自行解析名称）。</p>
+ * Level 3：无 Key 时 {@link LlmNameResolver} 名称纠错兜底（不产坐标，
+ * 复用 {@link #select} 与确认缓存），LLM 不可用则原名直传浏览器降级
+ * （路线页内高德自行解析名称）。</p>
  */
 public final class GeocodeResolver {
 
@@ -72,11 +74,18 @@ public final class GeocodeResolver {
 
     /** 解析地名：候选 → 置信度排序 → 城市上下文加权 → 自动选中或待确认（修订版 §三）。 */
     public Outcome resolve(String input, String cityHint) {
+        return select(input, cityHint, candidates(input, cityHint));
+    }
+
+    /**
+     * 候选（已含置信度、已排序）→ 缓存优先 → 阈值选中或待确认。
+     * 无 Key 的 LLM 兜底路径复用：与高德路径共用同一份确认缓存与阈值语义。
+     */
+    public Outcome select(String input, String cityHint, List<GeoLocation> candidates) {
         GeoLocation cached = confirmedCache.get(cacheKey(input, cityHint));
         if (cached != null) {
             return Outcome.autoSelected(cached);
         }
-        List<GeoLocation> candidates = candidates(input, cityHint);
         if (candidates.isEmpty()) {
             return Outcome.notFound(input);
         }
@@ -104,6 +113,28 @@ public final class GeocodeResolver {
         if (hit == null) {
             return Outcome.notFound(input);
         }
+        confirmedCache.put(cacheKey(input, cityHint), hit);
+        return Outcome.autoSelected(hit);
+    }
+
+    /**
+     * 无 Key 确认重调：先对 LLM 兜底候选（自带省市上下文），匹配不上再按确认名
+     * 重解析，仍无则直接信任确认名（Agent/用户已选定，坐标交路线页解析）。
+     * 成功后写入确认缓存，跨轮次复用。
+     */
+    public Outcome confirm(String input, String confirmedName, String cityHint, LlmNameResolver llm) {
+        GeoLocation hit = llm == null ? null : match(llm.candidates(input, cityHint), confirmedName);
+        if (hit == null && llm != null) {
+            // Agent 可能传了更具体的地名，直接按确认名再问一次 LLM
+            List<GeoLocation> retry = llm.candidates(confirmedName, cityHint);
+            if (!retry.isEmpty()) {
+                hit = retry.get(0);
+            }
+        }
+        if (hit == null) {
+            hit = GeoLocation.nameOnly(confirmedName);
+        }
+        hit.setConfidence(1.0);
         confirmedCache.put(cacheKey(input, cityHint), hit);
         return Outcome.autoSelected(hit);
     }
