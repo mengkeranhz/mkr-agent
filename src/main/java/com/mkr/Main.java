@@ -16,8 +16,8 @@ public final class Main {
 
 //        args = new String[]{"run", "--permission-mode", "auto-approve", "给定条件（如“5天川西自驾”或“3天江浙沪周边游”），要求 Agent 必须查阅两地真实距离、路况时间以及景点的近期开放状态，输出一份无逻辑冲突的日程规划。"};
 
-        args = new String[]{"run", "--permission-mode", "auto-approve", "给定条件（如“3天江浙沪周边游”），要求 Agent 必须查阅两地真实距离、路况时间以及景点的近期开放状态，输出一份无逻辑冲突的日程规划。"};
-
+        args = new String[]{"run", "--permission-mode", "auto-approve", "给定条件（如“5天苏北自驾”），要求 Agent 必须查阅两地真实距离、路况时间以及景点的近期开放状态，输出一份无逻辑冲突的日程规划。"};
+//
 //        args = new String[]{"run", "--permission-mode", "auto-approve", "检索北京、上海、广州当前最新的二手房均价（或最新人口/GDP数据），并计算它们相比上一年的增跌幅，最后按跌幅输出排名表"};
 
 //        args = new String[]{"run", "--permission-mode", "auto-approve", "检索北京、上海、广州、杭州当前最新的GDP数据，并计算它们相比上一年的增跌幅，最后按跌幅输出排名表"};

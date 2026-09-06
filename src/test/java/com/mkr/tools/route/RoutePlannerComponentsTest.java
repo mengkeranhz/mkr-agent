@@ -138,6 +138,27 @@ class RoutePlannerComponentsTest {
     }
 
     @Test
+    void joinNameSkipsDuplicatedAdminPrefix() {
+        // 名称已含城市 → 不重复前置（「徐州徐州东站」会导致高德页内解析失败）
+        assertEquals("徐州东站", LlmNameResolver.joinName("徐州", null, "徐州东站"));
+        assertEquals("徐州泉山区云龙湖风景名胜区",
+                LlmNameResolver.joinName("徐州", "泉山区", "云龙湖风景名胜区"));
+        assertEquals("杭州西湖区灵隐寺", LlmNameResolver.joinName("杭州", "西湖区", "灵隐寺"));
+        assertEquals("灵隐寺", LlmNameResolver.joinName(null, null, "灵隐寺"));
+        // 名称已含区名 → 区不前置
+        assertEquals("杭州西湖风景名胜区", LlmNameResolver.joinName("杭州", "西湖", "西湖风景名胜区"));
+    }
+
+    @Test
+    void parseCandidatesUsesDedupedFormatted() {
+        // glm-5.3 对「徐州东站」的真实返回（name 含城市）：formatted 不得拼出「徐州徐州东站」
+        String resp = "[{\"name\":\"徐州东站\",\"city\":\"徐州\",\"confidence\":0.99}]";
+        List<GeoLocation> c = LlmNameResolver.parseCandidates(resp, "徐州东站", "徐州");
+        assertEquals("徐州东站", c.get(0).name());
+        assertEquals("徐州东站", c.get(0).formatted());
+    }
+
+    @Test
     void selectThresholdsAndCache() {
         GeocodeResolver r = new GeocodeResolver(null, "");
         GeoLocation high = new GeoLocation("杭州东站", "浙江省杭州市杭州东站",
@@ -262,6 +283,18 @@ class RoutePlannerComponentsTest {
         RoutePlan p = RouteFetcher.fallbackPlan("公交 全程约48分钟 换乘1次", "bus");
         assertEquals(48 * 60, p.durationSec());
         assertEquals(-1, p.distanceMeters());
+    }
+
+    @Test
+    void failReasonDistinguishesUnresolvedNameFromRenderFailure() {
+        // 空表单态（歧义站名无法自动消歧，实测北土城站/鼓楼大街站/徐州东站均触发）
+        String picker = RouteFetcher.failReason("路线规划 起 终 请选择正确的起点、途经点或终点 收藏");
+        assertTrue(picker.contains("未能自动解析"));
+        assertTrue(picker.contains("唯一性地标"));
+        // 普通未渲染 → 带正文片段供排查
+        String bare = RouteFetcher.failReason("空白页面 无任何路线");
+        assertTrue(bare.contains("未渲染出路线"));
+        assertTrue(bare.contains("空白页面"));
     }
 
     // ---------------- RoutePlan 文本派生 ----------------

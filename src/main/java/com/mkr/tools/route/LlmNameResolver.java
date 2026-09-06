@@ -94,8 +94,8 @@ public final class LlmNameResolver {
             }
             String city = blankToNull(n.path("city").asText(null));
             String district = blankToNull(n.path("district").asText(null));
-            GeoLocation loc = new GeoLocation(name, (city == null ? "" : city)
-                    + (district == null ? "" : district) + name, null, city, district, null, null);
+            GeoLocation loc = new GeoLocation(name, joinName(city, district, name),
+                    null, city, district, null, null);
             double self = clamp01(n.path("confidence").asDouble(DEFAULT_LLM_CONFIDENCE));
             loc.setConfidence(Math.min(GeocodeResolver.confidence(input, loc, out.size(), cityHint), self));
             out.add(loc);
@@ -119,6 +119,21 @@ public final class LlmNameResolver {
         int start = content.indexOf('[');
         int end = content.lastIndexOf(']');
         return start >= 0 && end > start ? content.substring(start, end + 1) : "";
+    }
+
+    /**
+     * 拼接可搜索的规范名：名称已含的行政区划不重复前置——「徐州东站」不能再拼成
+     * 「徐州徐州东站」（重复前缀会导致高德页内解析失败）。包级可见供离线单测。
+     */
+    static String joinName(String city, String district, String name) {
+        String formatted = name == null ? "" : name;
+        if (district != null && !formatted.contains(district)) {
+            formatted = district + formatted;
+        }
+        if (city != null && !formatted.contains(city)) {
+            formatted = city + formatted;
+        }
+        return formatted;
     }
 
     private static double clamp01(double v) {
