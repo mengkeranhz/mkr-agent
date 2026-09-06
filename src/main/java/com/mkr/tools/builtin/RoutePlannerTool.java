@@ -87,6 +87,8 @@ public final class RoutePlannerTool implements Tool {
         LlmNameResolver llmNames = resolver.hasKey() ? null : LlmNameResolver.of(ctx);
 
         // ── 地名解析（v2 §四：起点 → 终点，歧义即返回候选列表）──────────────
+        // geocode_source 供事后核查解析路径：amap=官方 API；llm=LLM 兜底产出；raw=原名直传
+        String originSource = "amap";
         GeoLocation from;
         if (resolver.hasKey()) {
             String originConfirmed = ToolArgs.str(params, "origin_confirmed");
@@ -107,11 +109,13 @@ public final class RoutePlannerTool implements Tool {
                 return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
             }
             from = o == null || o.notFound() ? GeoLocation.nameOnly(origin) : o.selected();
+            originSource = o == null || o.notFound() ? "raw" : "llm";
         }
 
         GeoLocation to;
         String destConfirmed = ToolArgs.str(params, "destination_confirmed");
         String cityHint = city != null && !city.isBlank() ? city : from.city();
+        String destSource = "amap";
         if (resolver.hasKey()) {
             GeocodeResolver.Outcome o = destConfirmed == null || destConfirmed.isBlank()
                     ? resolver.resolve(destination, cityHint)
@@ -130,6 +134,7 @@ public final class RoutePlannerTool implements Tool {
                 return ToolResult.ok(confirmationText("destination", destination, o.candidates()), confirmationData("destination", destination, o.candidates()));
             }
             to = o == null || o.notFound() ? GeoLocation.nameOnly(destination) : o.selected();
+            destSource = o == null || o.notFound() ? "raw" : "llm";
         }
 
         // ── 路线抓取 + 评分推荐 ─────────────────────────────────────────────
@@ -147,6 +152,7 @@ public final class RoutePlannerTool implements Tool {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("origin", from.formatted());
         data.put("destination", to.formatted());
+        data.put("geocode_source", originSource + "," + destSource);
         data.put("mode", mode);
         data.put("prefer", prefer);
         data.put("plans_count", plans.size());

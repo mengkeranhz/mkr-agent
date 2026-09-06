@@ -62,7 +62,9 @@ public final class LlmNameResolver {
             if (prompt.isBlank()) {
                 return List.of();
             }
-            LlmClient.ChatOptions opts = LlmClient.ChatOptions.of(model, 384, 0, false);
+            // 推理型模型（如 glm-5.3）thinking 与正文共享 max_tokens：预算过小会被
+            // thinking 全部吃光（实测 384 时无正文输出），留足余量（实测约需 500+）
+            LlmClient.ChatOptions opts = LlmClient.ChatOptions.of(model, 2048, 0, false);
             LlmResponse resp = llm.chat(List.of(Message.user(prompt)), List.of(), opts);
             if (ctx.cost() != null) {
                 ctx.cost().track(resp.usage(), resp.model());
