@@ -9,6 +9,7 @@ import com.mkr.tools.ToolArgs;
 import com.mkr.tools.ToolParam;
 import com.mkr.tools.ToolResult;
 import org.openqa.selenium.By;
+import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -29,7 +30,7 @@ import org.jsoup.Jsoup;
  * 会话复用，支持无头模式。
  */
 @AgentTool(name = "browser",
-        description = "浏览器自动化（goto/click/fill/content/screenshot），会话复用同一浏览器实例。Use when: JS 渲染页面/需要交互；Don't use when: 静态页面用 web_fetch 即可。",
+        description = "浏览器自动化（goto/click/fill/content/screenshot/eval），会话复用同一浏览器实例。Use when: JS 渲染页面/需要交互；Don't use when: 静态页面用 web_fetch 即可。",
         risk = Risk.MEDIUM)
 public final class BrowserTool implements Tool {
 
@@ -40,10 +41,11 @@ public final class BrowserTool implements Tool {
     @Override
     public List<ToolParam> parameters() {
         return List.of(
-                new ToolParam("action", "string", "goto | click | fill | content | screenshot | close", true),
+                new ToolParam("action", "string", "goto | click | fill | content | screenshot | eval | close", true),
                 new ToolParam("url", "string", "目标 URL（goto 用；content 可选，提供则先导航）", false),
                 new ToolParam("selector", "string", "CSS 选择器或 XPath（click/fill 用，自动识别）", false),
                 new ToolParam("value", "string", "填充值（fill 用）", false),
+                new ToolParam("script", "string", "页面内执行的 JavaScript（eval 用，可隐藏遮挡浮层等）", false),
                 new ToolParam("path", "string", "截图保存路径（screenshot 用，默认当前目录）", false),
                 new ToolParam("headless", "boolean", "无头模式（默认 true，首次启动会话时生效）", false),
                 new ToolParam("wait_ms", "integer", "导航后额外等待毫秒（默认 0；JS 渲染页面建议 1000+）", false),
@@ -61,6 +63,7 @@ public final class BrowserTool implements Tool {
                 case "fill" -> fillElement(params);
                 case "content" -> getContent(params);
                 case "screenshot" -> takeScreenshot(params);
+                case "eval" -> evalScript(params);
                 case "close" -> closeBrowser();
                 default -> ToolResult.error("INVALID_ACTION", "不支持的 action: " + action);
             };
@@ -257,6 +260,24 @@ public final class BrowserTool implements Tool {
             return ToolResult.ok("截图已保存: " + targetFile.getAbsolutePath());
         } catch (Exception e) {
             return ToolResult.error("SCREENSHOT_FAILED", "截图失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 页面内执行 JavaScript（当前页面上下文），返回执行结果字符串。
+     * 典型用途：隐藏遮挡浮层（如登录弹窗 mask）以便点击其下的元素。
+     */
+    private ToolResult evalScript(Map<String, Object> params) {
+        String script = ToolArgs.str(params, "script");
+        if (script == null || script.isBlank()) {
+            return ToolResult.error("INVALID_ARGS", "eval 需要 script 参数");
+        }
+        WebDriver driver = getDriver(params);
+        try {
+            Object result = ((JavascriptExecutor) driver).executeScript(script);
+            return ToolResult.ok("执行成功: " + (result == null ? "（无返回值）" : String.valueOf(result)));
+        } catch (Exception e) {
+            return ToolResult.error("EVAL_FAILED", "脚本执行失败: " + e.getMessage());
         }
     }
 

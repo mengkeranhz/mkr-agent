@@ -21,7 +21,9 @@ import java.util.regex.Pattern;
  *
  * <p>浏览器路径解析已验证的 ditu.amap.com/dir 路线页：{@code from[name]/to[name]}
  * 由高德站内自行解析地名；主方案与「备选方案」卡片均含「xx.x公里 / xx分钟」文本，
- * 按邻近配对逐卡提取全部线路（见 {@link #parsePlans}）。</p>
+ * 按邻近配对逐卡提取全部线路（见 {@link #parsePlans}）。名称无法自动消歧时页面进入
+ * 「请选择正确的起点」待选择态并列出候选（常见于地铁站等多同名 POI），此时自动隐藏
+ * 遮挡浮层并依次点选起点/终点首候选（见 {@link #pickUnresolvedPois}）。</p>
  */
 public final class RouteFetcher {
 
@@ -95,11 +97,35 @@ public final class RouteFetcher {
 
     /**
      * 浏览器降级：ditu.amap.com/dir 路线页 → 渲染文本逐卡解析全部线路（主方案在前、备选方案在后）。
-     * 路线规划发生在页面加载后的异步请求：固定等待常赶不上渲染完成（偶发页面无路线卡、
-     * 只剩噪声值），故轮询直至出现路线卡或超时（总预算 {@code max(wait_ms*3, 6s)}）。
+     *
+     * <p>两个已实测的失败模式各有对策：① 路线规划是页面加载后的异步请求，固定等待常赶不上
+     * 渲染完成 → 轮询直至出现路线卡（总预算 {@code max(wait_ms*3, 6s)}）；② 高德对同一
+     * 浏览器会话的连续 /dir 导航限流（页面加载但忽略名称参数，呈空表单态）→ 失败时
+     * 关闭会话换新指纹 + 退避后重试一次。</p>
      */
     private List<RoutePlan> fetchViaBrowser(GeoLocation from, GeoLocation to, String mode,
                                             boolean headless, int waitMs) throws Exception {
+        String firstError = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (attempt > 0) {
+                browser.run(Map.of("action", "close"), null); // 丢弃被限流会话（新 cookie/指纹）
+                Thread.sleep(1500);                            // 退避，避开短时限流窗口
+            }
+            try {
+                return fetchViaBrowserOnce(from, to, mode, headless, waitMs);
+            } catch (Exception e) {
+                if (firstError == null) {
+                    firstError = e.getMessage();
+                }
+            }
+        }
+        throw new IllegalStateException(firstError
+                + "。反复失败可配置 AMAP_KEY 走官方 API（place/text 多候选消歧 + 免浏览器反爬）");
+    }
+
+    /** 单次浏览器尝试：goto → 轮询路线卡 → 待选择态自动点选 → 单值兜底。 */
+    private List<RoutePlan> fetchViaBrowserOnce(GeoLocation from, GeoLocation to, String mode,
+                                                boolean headless, int waitMs) throws Exception {
         String url = "https://ditu.amap.com/dir?type=" + amapType(mode) + "&policy=2"
                 + "&from%5Bname%5D=" + URLEncoder.encode(from.formatted(), StandardCharsets.UTF_8)
                 + "&to%5Bname%5D=" + URLEncoder.encode(to.formatted(), StandardCharsets.UTF_8)
@@ -111,29 +137,76 @@ public final class RouteFetcher {
             throw new IllegalStateException("路线页打开失败: " + open.render());
         }
         long deadline = System.currentTimeMillis() + Math.max(waitMs * 3L, 6000L);
-        String text = "";
+        StringBuilder text = new StringBuilder();
+        List<RoutePlan> plans = pollForCards(mode, deadline, text);
+        // 待选择态（URI 名称未能自动消歧，页面已列出候选）：自动点选后再等路线卡
+        if (plans.isEmpty() && text.toString().contains("请选择正确的起点")) {
+            pickUnresolvedPois();
+            plans = pollForCards(mode, System.currentTimeMillis() + 8000L, text);
+        }
+        if (!plans.isEmpty()) {
+            return plans;
+        }
+        // 逐卡配对失败（页面残缺/结构改版/名称未解析）→ 单值兜底：仅当存在可信耗时
+        // 才构造（距离可缺省）；无耗时不编造数据，如实报「未渲染出路线」
+        RoutePlan fallback = fallbackPlan(text.toString(), mode);
+        if (fallback == null) {
+            throw new IllegalStateException(failReason(text.toString()));
+        }
+        return List.of(fallback);
+    }
+
+    /** 轮询页面直至出现路线卡或超时；最后读到的正文文本写入 out（供失败归因）。 */
+    private List<RoutePlan> pollForCards(String mode, long deadlineMs, StringBuilder out) throws Exception {
         while (true) {
             ToolResult content = browser.run(Map.of("action", "content"), null);
             if (!content.success()) {
                 throw new IllegalStateException("页面内容获取失败: " + content.render());
             }
-            text = pageText(content.output());
-            List<RoutePlan> plans = parsePlans(text, mode);
+            out.setLength(0);
+            out.append(pageText(content.output()));
+            List<RoutePlan> plans = parsePlans(out.toString(), mode);
             if (!plans.isEmpty()) {
                 return plans;
             }
-            if (System.currentTimeMillis() >= deadline) {
-                break;
+            if (System.currentTimeMillis() >= deadlineMs) {
+                return List.of();
             }
             Thread.sleep(800);
         }
-        // 逐卡配对失败（页面残缺/结构改版/名称未解析）→ 单值兜底：仅当存在可信耗时
-        // 才构造（距离可缺省）；无耗时不编造数据，如实报「未渲染出路线」
-        RoutePlan fallback = fallbackPlan(text, mode);
-        if (fallback == null) {
-            throw new IllegalStateException("页面未渲染出路线，正文片段: " + snippet(text));
+    }
+
+    /**
+     * 待选择态自动点选：侧栏已按未消歧名称列出候选（li.dir_choose_item，起点在前、
+     * 点选后刷新出终点候选）。遮挡侧栏的登录/推广浮层（mask--*，z-index 10000）的
+     * 关闭按钮都在其下点不动，实测仅 JS 隐藏有效。最多点两轮（起点+终点）。
+     */
+    private void pickUnresolvedPois() throws Exception {
+        String hideMask = "document.querySelectorAll('[class*=\"mask--\"]')"
+                + ".forEach(e => e.style.display = 'none')";
+        browser.run(Map.of("action", "eval", "script", hideMask), null);
+        Thread.sleep(500);
+        for (int round = 0; round < 2; round++) {
+            ToolResult click = browser.run(Map.of("action", "click",
+                    "selector", "li.dir_choose_item", "timeout_ms", 4000, "wait_ms", 2000), null);
+            if (!click.success()) {
+                break; // 无候选可点（名称完全无匹配）
+            }
+            browser.run(Map.of("action", "eval", "script", hideMask), null);
+            Thread.sleep(800);
         }
-        return List.of(fallback);
+    }
+
+    /**
+     * 最终失败原因分类：空表单态（「请选择正确的起点」提示仍在且无路线卡）多为
+     * 歧义名称（地铁站/火车站等多同名 POI，URI 参数无法自动消歧，实测换名变体亦无效）；
+     * 其余按未渲染处理。包级可见供离线单测。
+     */
+    static String failReason(String text) {
+        return text.contains("请选择正确的起点")
+                ? "高德路线页未能自动解析起/终点名称（歧义名常见于地铁站、火车站等多同名 POI），"
+                        + "请改用唯一性地标名（如「天安门」）或更具体名称"
+                : "页面未渲染出路线，正文片段: " + snippet(text);
     }
 
     /** BrowserTool 输出 → 渲染正文纯文本（兼容新旧输出标记）。 */
