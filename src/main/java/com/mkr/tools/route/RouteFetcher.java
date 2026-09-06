@@ -93,7 +93,11 @@ public final class RouteFetcher {
         return fetchViaBrowser(from, to, mode, headless, waitMs);
     }
 
-    /** 浏览器降级：ditu.amap.com/dir 路线页 → 渲染文本逐卡解析全部线路（主方案在前、备选方案在后）。 */
+    /**
+     * 浏览器降级：ditu.amap.com/dir 路线页 → 渲染文本逐卡解析全部线路（主方案在前、备选方案在后）。
+     * 路线规划发生在页面加载后的异步请求：固定等待常赶不上渲染完成（偶发页面无路线卡、
+     * 只剩噪声值），故轮询直至出现路线卡或超时（总预算 {@code max(wait_ms*3, 6s)}）。
+     */
     private List<RoutePlan> fetchViaBrowser(GeoLocation from, GeoLocation to, String mode,
                                             boolean headless, int waitMs) throws Exception {
         String url = "https://ditu.amap.com/dir?type=" + amapType(mode) + "&policy=2"
@@ -106,29 +110,54 @@ public final class RouteFetcher {
         if (!open.success()) {
             throw new IllegalStateException("路线页打开失败: " + open.render());
         }
-        ToolResult content = browser.run(Map.of("action", "content"), null);
-        if (!content.success()) {
-            throw new IllegalStateException("页面内容获取失败: " + content.render());
+        long deadline = System.currentTimeMillis() + Math.max(waitMs * 3L, 6000L);
+        String text = "";
+        while (true) {
+            ToolResult content = browser.run(Map.of("action", "content"), null);
+            if (!content.success()) {
+                throw new IllegalStateException("页面内容获取失败: " + content.render());
+            }
+            text = pageText(content.output());
+            List<RoutePlan> plans = parsePlans(text, mode);
+            if (!plans.isEmpty()) {
+                return plans;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                break;
+            }
+            Thread.sleep(800);
         }
-        String html = content.output();
-        int marker = html.indexOf("--- 正文（markdown） ---");
-        if (marker < 0) {
-            marker = html.indexOf("--- HTML 内容 ---"); // 旧版 BrowserTool 输出标记
-        }
-        String text = Jsoup.parse(marker >= 0 ? html.substring(marker) : html).text();
-
-        List<RoutePlan> plans = parsePlans(text, mode);
-        if (!plans.isEmpty()) {
-            return plans;
-        }
-        // 逐卡配对失败（页面残缺/结构改版）→ 单值提取兜底：只渲染出距离或耗耗时仍返回一条
-        long distM = firstDistanceMeters(text);
-        long durSec = firstDurationSec(text);
-        if (distM <= 0 && durSec <= 0) {
+        // 逐卡配对失败（页面残缺/结构改版/名称未解析）→ 单值兜底：仅当存在可信耗时
+        // 才构造（距离可缺省）；无耗时不编造数据，如实报「未渲染出路线」
+        RoutePlan fallback = fallbackPlan(text, mode);
+        if (fallback == null) {
             throw new IllegalStateException("页面未渲染出路线，正文片段: " + snippet(text));
         }
+        return List.of(fallback);
+    }
+
+    /** BrowserTool 输出 → 渲染正文纯文本（兼容新旧输出标记）。 */
+    private static String pageText(String toolOutput) {
+        int marker = toolOutput.indexOf("--- 正文（markdown） ---");
+        if (marker < 0) {
+            marker = toolOutput.indexOf("--- HTML 内容 ---"); // 旧版 BrowserTool 输出标记
+        }
+        return Jsoup.parse(marker >= 0 ? toolOutput.substring(marker) : toolOutput).text();
+    }
+
+    /**
+     * 单值提取兜底：只渲染出耗时时仍返回一条（距离未知诚实标注）。
+     * <b>必须存在可信耗时</b>——只有孤立的距离值（如页面噪声「30.0公里」）时返回 null，
+     * 由调用方报错，杜绝「30.0公里/1分钟」式编造。包级可见供离线单测。
+     */
+    static RoutePlan fallbackPlan(String text, String mode) {
+        long durSec = firstDurationSec(text);
+        if (durSec <= 0) {
+            return null;
+        }
+        long distM = firstDistanceMeters(text);
         Double cost = "bus".equals(mode) ? firstCost(text) : null;
-        return List.of(new RoutePlan(mode, Math.max(durSec, 60), distM, cost, 0, "", "amap-web"));
+        return new RoutePlan(mode, Math.max(durSec, 60), distM, cost, 0, "", "amap-web");
     }
 
     private static String amapType(String mode) {
@@ -215,6 +244,13 @@ public final class RouteFetcher {
             }
             int limit = i + 1 < durs.size() ? durs.get(i + 1).start() : text.length();
             plans.add(cardPlan(mode, dur, dist, text, limit));
+        }
+        // 离群距离过滤：同一起终点的备选方案距离不会相差数倍，显著偏小的「距离」
+        // 是页面噪声与重复渲染耗时的误配（如真实 200 公里级路线混入 30.0公里）
+        final long maxDist = plans.stream().filter(p -> p.distanceMeters() > 0)
+                .mapToLong(RoutePlan::distanceMeters).max().orElse(0L);
+        if (maxDist > 0) {
+            plans.removeIf(p -> p.distanceMeters() > 0 && p.distanceMeters() * 4 < maxDist);
         }
         return plans;
     }

@@ -122,6 +122,22 @@ class RoutePlannerComponentsTest {
     }
 
     @Test
+    void parseRealGlm53CorrectionResponse() {
+        // glm-5.3（bigmodel anthropic 协议）对「灵隐ssi」+城市提示「杭州」的真实返回（2026-09-06 实测）
+        String resp = "[{\"name\":\"灵隐寺\",\"city\":\"杭州\",\"district\":\"西湖区\",\"confidence\":0.97},"
+                + "{\"name\":\"灵隐飞来峰景区\",\"city\":\"杭州\",\"district\":\"西湖区\",\"confidence\":0.72},"
+                + "{\"name\":\"灵隐路\",\"city\":\"杭州\",\"district\":\"西湖区\",\"confidence\":0.25}]";
+        List<GeoLocation> c = LlmNameResolver.parseCandidates(resp, "灵隐ssi", "杭州");
+        // 3 个 LLM 候选 + 兜底保留的原输入
+        assertEquals(4, c.size());
+        assertEquals("灵隐寺", c.get(0).name());
+        // 置信度 = min(相似度 0.73, 自评 0.97)：错字改写不自动选中
+        assertEquals(0.73, c.get(0).confidence(), 1e-9);
+        assertTrue(c.stream().anyMatch(l -> l.name().equals("灵隐ssi")));
+        assertTrue(c.stream().allMatch(l -> l.lngLat() == null));
+    }
+
+    @Test
     void selectThresholdsAndCache() {
         GeocodeResolver r = new GeocodeResolver(null, "");
         GeoLocation high = new GeoLocation("杭州东站", "浙江省杭州市杭州东站",
@@ -223,6 +239,29 @@ class RoutePlannerComponentsTest {
         String text = "59分钟 38.5公里 59分钟 38.5公里 1小时5分钟 40.2公里";
         List<RoutePlan> plans = RouteFetcher.parsePlans(text, "car");
         assertEquals(2, plans.size());
+    }
+
+    @Test
+    void parsePlansDropsOutlierDistanceNoise() {
+        // 降级渲染：真实卡 182.6/206.5 公里 + 噪声「30.0公里」误配重复耗时 → 离群过滤掉
+        String text = "驾车 全程约2小时10分钟 182.6公里 备选方案 2小时22分钟 206.5公里 30.0公里 2小时24分钟";
+        List<RoutePlan> plans = RouteFetcher.parsePlans(text, "car");
+        assertEquals(2, plans.size());
+        assertTrue(plans.stream().allMatch(p -> p.distanceMeters() > 100_000));
+        // 距离相近的正常备选不受影响
+        String normal = "全程约59分钟 38.5公里 备选方案 1小时5分钟 40.2公里";
+        assertEquals(2, RouteFetcher.parsePlans(normal, "car").size());
+    }
+
+    @Test
+    void fallbackPlanRequiresRealDuration() {
+        // 只有孤立噪声距离、无耗时 → 不构造（杜绝「30.0公里/1分钟」编造）
+        assertNull(RouteFetcher.fallbackPlan("附近 热门 30.0公里 详情", "car"));
+        assertNull(RouteFetcher.fallbackPlan("页面未渲染出路线", "car"));
+        // 有真实耗时、距离缺省 → 距离未知但耗时可信
+        RoutePlan p = RouteFetcher.fallbackPlan("公交 全程约48分钟 换乘1次", "bus");
+        assertEquals(48 * 60, p.durationSec());
+        assertEquals(-1, p.distanceMeters());
     }
 
     // ---------------- RoutePlan 文本派生 ----------------
