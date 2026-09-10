@@ -6,6 +6,7 @@ import com.mkr.util.Json;
 import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 高德开放平台路线 API（Web 服务 v5）。需 Key（config tools.route-planner.amap-key 或环境变量 AMAP_KEY）；
@@ -16,6 +17,16 @@ final class AmapRouteClient {
     private static final String DRIVING_URL = "https://restapi.amap.com/v5/direction/driving";
     private static final String TRANSIT_URL = "https://restapi.amap.com/v5/direction/transit/integrated";
     private static final String WALKING_URL = "https://restapi.amap.com/v5/direction/walking";
+
+    /** 已知业务性失败（重试/浏览器兜底无意义）→ 明确提示；命中即快速失败。 */
+    private static final Map<String, String> BUSINESS_HINTS = Map.of(
+            "20803", "步行路线超出高德可规划距离，请改用驾车(car)或公交(bus)模式",
+            "20001", "公交路线规划缺少城市参数，请通过 city 参数提供城市，或改用地点名称而非坐标");
+
+    /** infocode → 业务性失败提示；临时性失败返回 null（走浏览器兜底）。包级可见供离线单测。 */
+    static String businessHint(String infocode) {
+        return infocode == null ? null : BUSINESS_HINTS.get(infocode);
+    }
 
     private final HttpClient http;
     private final String key;
@@ -126,8 +137,12 @@ final class AmapRouteClient {
     private JsonNode get(String url) throws Exception {
         JsonNode root = Json.read(AmapHttp.get(http, url));
         if (!"1".equals(root.path("status").asText())) {
-            throw new IllegalStateException("高德API错误: " + root.path("info").asText("?")
-                    + " (infocode=" + root.path("infocode").asText("?") + ")");
+            String info = root.path("info").asText("?");
+            String infocode = root.path("infocode").asText("?");
+            String hint = businessHint(infocode);
+            String msg = "高德API错误: " + info + (hint == null ? "" : "：" + hint)
+                    + " (infocode=" + infocode + ")";
+            throw hint == null ? new AmapApiException(msg) : new AmapBusinessException(msg);
         }
         return root;
     }
