@@ -159,6 +159,8 @@ public final class AppConfig {
         c.tools.webSearchMaxResults = i(ws, "max-results", c.tools.webSearchMaxResults);
         Map<String, Object> wf = m(tools, "web-fetch");
         c.tools.webFetchProvider = s(wf, "provider", c.tools.webFetchProvider);
+        Map<String, Object> rf = m(tools, "read-file");
+        c.tools.readFileKeywordMaxResults = i(rf, "keyword-max-results", c.tools.readFileKeywordMaxResults);
         Map<String, Object> rp = m(tools, "route-planner");
         c.tools.routePlannerAmapKey = s(rp, "amap-key", c.tools.routePlannerAmapKey);
         c.tools.routePlannerHeadless = b(rp, "headless", c.tools.routePlannerHeadless);
@@ -292,6 +294,8 @@ public final class AppConfig {
         public String webSearchApiKey = "";
         public int webSearchMaxResults = 5;
         public String webFetchProvider = "local";
+        /** read_file 关键字模式：最多返回的段落数（0=不限）。 */
+        public int readFileKeywordMaxResults = 5;
         /** 路线规划：高德开放平台 Key（空=LLM 名称纠错兜底 + 浏览器降级，高德站内解析名称）；也可用环境变量 AMAP_KEY。 */
         public String routePlannerAmapKey = "";
         /** 路线规划：浏览器降级默认无头（高德对无头渲染有反爬风险，默认 false）。 */
