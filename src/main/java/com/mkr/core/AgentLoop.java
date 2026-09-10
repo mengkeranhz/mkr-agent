@@ -14,6 +14,7 @@ import com.mkr.event.AgentEvent;
 import com.mkr.guard.ApprovalGate;
 import com.mkr.guard.FileAccessGuard;
 import com.mkr.guard.Guardrail;
+import com.mkr.guard.InjectionSanitizer;
 import com.mkr.recovery.CircuitBreaker;
 import com.mkr.recovery.DuplicateDetector;
 import com.mkr.recovery.ErrorClassifier;
@@ -317,6 +318,11 @@ public abstract class AgentLoop {
             // final_answer 特判：CompletionJudge 独立判定
             if ("final_answer".equals(call.name())) {
                 String answer = String.valueOf(args.getOrDefault("answer", ""));
+                if (answer.isBlank()) {
+                    ctx.status().incErrors();
+                    return ToolResult.error("INVALID_ARGS",
+                            "final_answer 的 answer 不能为空（当前为空/仅空白）。请先产出完整答复全文再提交。");
+                }
                 CompletionJudge.Judgment j = ctx.judge().judge(ctx, answer);
                 if (j.complete()) {
                     pendingFinal = answer;
@@ -381,6 +387,9 @@ public abstract class AgentLoop {
                 breaker.recordSuccess();
                 if ("update_plan".equals(call.name())) {
                     ctx.setState(AgentState.PLAN_UPDATE);
+                }
+                if ("web_search".equals(call.name()) || "web_fetch".equals(call.name())) {
+                    InjectionSanitizer.extractSources(result.output()).forEach(ctx.status()::recordSource);
                 }
             } else {
                 ctx.status().incErrors();
