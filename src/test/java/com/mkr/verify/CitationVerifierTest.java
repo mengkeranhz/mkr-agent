@@ -42,6 +42,29 @@ class CitationVerifierTest {
     }
 
     @Test
+    void rejectFabricatedUrlEchoesWhitelist() {
+        var c = CitationVerifier.check(traj(FETCHED), "见 https://made-up.example.net/report");
+        assertFalse(c.ok(), "编造 URL 应被拒绝");
+        // 拒绝理由应回显白名单原串，便于下一轮直接复制
+        assertTrue(c.reason().contains("https://a.example.com/stats"), c.reason());
+    }
+
+    @Test
+    void rejectPlaceholderEvenWithoutExternalContent() {
+        // 占位符残留与外部内容无关：无外部来源也应拦截
+        var c = CitationVerifier.check(traj("line1\nline2"), "结论详见 https://www.petkit.com.tw/blog/posts/PLACEHOLDER 无效");
+        assertFalse(c.ok(), "占位符应被拒绝");
+        assertTrue(c.reason().contains("占位符"), c.reason());
+    }
+
+    @Test
+    void rejectPlaceholderTokenInPlainText() {
+        var c = CitationVerifier.check(traj(FETCHED), "该数值来源待补，暂列为（TODO）。");
+        assertFalse(c.ok(), "待补/TODO 占位符应被拒绝");
+        assertTrue(c.reason().contains("占位符"), c.reason());
+    }
+
+    @Test
     void rejectMissingCitationWhenExternalUsed() {
         var c = CitationVerifier.check(traj(FETCHED), "均价 34000 元/平米。");
         assertFalse(c.ok(), "用了外部检索但无来源标注应被拒绝");

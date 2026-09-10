@@ -5,6 +5,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -20,6 +21,7 @@ public final class StatusBar {
     private static final DateTimeFormatter TS = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
 
     private volatile List<Todo> todos = List.of();
+    private final List<String> sources = new CopyOnWriteArrayList<>();
     private final AtomicInteger toolCalls = new AtomicInteger();
     private final AtomicInteger errors = new AtomicInteger();
     private final Instant startedAt = Instant.now();
@@ -33,6 +35,17 @@ public final class StatusBar {
 
     public void setTodos(List<Todo> todos) {
         this.todos = List.copyOf(todos);
+    }
+
+    /** 登记一个已捕获的外部来源 URL（去重）；最终答复引用时应逐字符原样复制。 */
+    public void recordSource(String url) {
+        if (url != null && !url.isBlank() && !sources.contains(url)) {
+            sources.add(url);
+        }
+    }
+
+    public List<String> sources() {
+        return List.copyOf(sources);
     }
 
     /** update_plan 工具参数同步：steps=[{text,done}] 或 todo=[...] 或 plan=[...]。 */
@@ -97,6 +110,18 @@ public final class StatusBar {
             for (Todo t : todos) {
                 sb.append("- [").append(t.done() ? 'x' : ' ').append("] ").append(t.text())
                         .append(t.done() ? "(已完成)" : "").append('\n');
+            }
+        }
+        if (!sources.isEmpty()) {
+            sb.append("已登记来源（引用请逐字符原样复制，勿改尾斜杠/大小写）:\n");
+            int shown = 0;
+            for (String s : sources) {
+                if (shown >= 10) {
+                    sb.append("- … 等 ").append(sources.size()).append(" 个来源\n");
+                    break;
+                }
+                sb.append("- ").append(s).append('\n');
+                shown++;
             }
         }
         sb.append("tool_calls: ").append(toolCalls.get())
