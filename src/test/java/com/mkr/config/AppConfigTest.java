@@ -78,6 +78,19 @@ class AppConfigTest {
     }
 
     @Test
+    void readFileKeywordMaxResultsFromConfig(@TempDir Path tmp) throws Exception {
+        Files.writeString(tmp.resolve("config.yaml"), """
+                tools:
+                  read-file:
+                    keyword-max-results: 12
+                """);
+        AppConfig cfg = AppConfig.load(tmp, tmp.resolve("config.yaml"));
+        assertEquals(12, cfg.tools.readFileKeywordMaxResults);
+        // 未配置保持默认 5
+        assertEquals(5, new AppConfig().tools.readFileKeywordMaxResults);
+    }
+
+    @Test
     void fromMapParsesPricesAndFeatures(@TempDir Path tmp) throws Exception {
         Files.writeString(tmp.resolve("config.yaml"), """
                 obs:

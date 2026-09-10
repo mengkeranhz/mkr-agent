@@ -3,12 +3,7 @@ package com.mkr.tools.route;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.mkr.util.Json;
 
-import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -129,11 +124,7 @@ final class AmapRouteClient {
     }
 
     private JsonNode get(String url) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
-                .GET().build();
-        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        JsonNode root = Json.read(resp.body());
+        JsonNode root = Json.read(AmapHttp.get(http, url));
         if (!"1".equals(root.path("status").asText())) {
             throw new IllegalStateException("高德API错误: " + root.path("info").asText("?")
                     + " (infocode=" + root.path("infocode").asText("?") + ")");

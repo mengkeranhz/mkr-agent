@@ -22,9 +22,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * RoutePlanner（route_planner）：路线规划（设计方案 v1 架构 + v2 边界场景修订）。
- * 地名解析多级回退（高德 place/text API → 浏览器降级）；路线抓取 API 优先、
- * 浏览器渲染页兜底（复用 BrowserTool 会话）；多方案加权评分推荐。
+ * RouteQuery（route_query）：路线规划（由 RoutePlannerTool 拆分而来，保留其全部能力与兜底）。
+ * 起终点支持名称（多级回退：高德 place/text API → LLM 名称纠错 → 浏览器降级）或坐标
+ * 「经度,纬度」（免解析直传）；路线抓取 API 优先、浏览器渲染页兜底（复用 BrowserTool 会话）；
+ * 多方案加权评分推荐。
  *
  * <p>地名歧义时不直接失败：返回候选列表 + 置信度，Agent 据上下文选定后携带
  * {@code origin_confirmed}/{@code destination_confirmed} 重调（修订版 §六 交互流程）。
@@ -32,10 +33,10 @@ import java.util.Map;
  * 路线页仍是最终仲裁），LLM 不可用或无候选则名称直传路线页（高德站内解析），
  * 结果仍真实可用。</p>
  */
-@AgentTool(name = "route_planner",
-        description = "路线规划：起点→终点查询驾车/公交/步行路线（距离、耗时、费用、路线概要、加权推荐）。Use when: 查两地路线/通勤方案/出行对比；Don't use when: 只查地点信息用 web_search。地名有歧义时返回候选列表，需带 origin_confirmed/destination_confirmed 重新调用。",
+@AgentTool(name = "route_query",
+        description = "路线规划：起点→终点查询驾车/公交/步行路线（距离、耗时、费用、路线概要、加权推荐）。Use when: 查两地路线/通勤方案/出行对比；Don't use when: 只查地点信息用 search_place 或 web_search。地名有歧义时返回候选列表，需带 origin_confirmed/destination_confirmed 重新调用。",
         risk = Risk.LOW)
-public final class RoutePlannerTool implements Tool {
+public final class RouteQueryTool implements Tool {
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15)).build();
@@ -49,10 +50,10 @@ public final class RoutePlannerTool implements Tool {
     @Override
     public List<ToolParam> parameters() {
         return List.of(
-                new ToolParam("origin", "string", "起点名称，如「杭州东站」", true),
-                new ToolParam("destination", "string", "终点名称，如「灵隐寺」", true),
-                new ToolParam("mode", "string", "交通方式（默认 car；all=三种方式依次查询，较慢）", false,
-                        "car", "bus", "walk", "all"),
+                new ToolParam("origin", "string", "起点：名称（如「杭州东站」）或坐标「经度,纬度」", true),
+                new ToolParam("destination", "string", "终点：名称（如「灵隐寺」）或坐标「经度,纬度」", true),
+                new ToolParam("mode", "string", "交通方式（默认 car；all=三种方式依次查询，较慢；driving/walking/transit 为 car/walk/bus 别名；taxi=驾车+粗略估价）", false,
+                        "car", "bus", "walk", "all", "taxi", "driving", "walking", "transit"),
                 new ToolParam("prefer", "string", "推荐偏好（默认 balanced）", false,
                         "fastest", "shortest", "cheapest", "balanced"),
                 new ToolParam("city", "string", "城市提示（如「杭州」），地名消歧时优先同城", false),
@@ -72,51 +73,62 @@ public final class RoutePlannerTool implements Tool {
         if (destination == null || destination.isBlank()) {
             return ToolResult.error("INVALID_ARGS", "destination 不能为空");
         }
-        String mode = ToolArgs.str(params, "mode", "car");
-        if (!List.of("car", "bus", "walk", "all").contains(mode)) {
-            return ToolResult.error("INVALID_ARGS", "mode 仅支持 car/bus/walk/all，收到: " + mode);
+        String modeRaw = ToolArgs.str(params, "mode", "car");
+        String mode = normalizeMode(modeRaw);
+        if (mode == null) {
+            return ToolResult.error("INVALID_ARGS",
+                    "mode 仅支持 car/bus/walk/all（driving/walking/transit/taxi 为别名），收到: " + modeRaw);
         }
+        boolean taxi = "taxi".equals(modeRaw.trim());
         String prefer = ToolArgs.str(params, "prefer", "balanced");
         String city = ToolArgs.str(params, "city");
         boolean headless = ToolArgs.bool(params, "headless",
                 ctx != null && ctx.config() != null && ctx.config().tools.routePlannerHeadless);
         int waitMs = ToolArgs.Int(params, "wait_ms", 2500);
 
-        String key = apiKey(ctx);
+        String key = AmapSupport.amapKey(ctx);
         ensureClients(key);
         LlmNameResolver llmNames = resolver.hasKey() ? null : LlmNameResolver.of(ctx);
 
         // ── 地名解析（v2 §四：起点 → 终点，歧义即返回候选列表）──────────────
-        // geocode_source 供事后核查解析路径：amap=官方 API；llm=LLM 兜底产出；raw=原名直传
+        // geocode_source 供事后核查解析路径：amap=官方 API；llm=LLM 兜底产出；raw=原名直传；coord=坐标直传
         String originSource = "amap";
-        GeoLocation from;
-        if (resolver.hasKey()) {
-            String originConfirmed = ToolArgs.str(params, "origin_confirmed");
-            GeocodeResolver.Outcome o = originConfirmed == null || originConfirmed.isBlank()
-                    ? resolver.resolve(origin, city)
-                    : resolver.confirm(origin, originConfirmed, city);
-            if (o.needConfirmation()) {
-                return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
+        GeoLocation from = coordOrNull(origin);
+        if (from == null) {
+            if (resolver.hasKey()) {
+                String originConfirmed = ToolArgs.str(params, "origin_confirmed");
+                GeocodeResolver.Outcome o = originConfirmed == null || originConfirmed.isBlank()
+                        ? resolver.resolve(origin, city)
+                        : resolver.confirm(origin, originConfirmed, city);
+                if (o.needConfirmation()) {
+                    return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
+                }
+                if (o.notFound()) {
+                    return ToolResult.error("LOCATION_NOT_FOUND",
+                            "未找到地点「" + origin + "」，请检查输入或提供更具体名称/城市提示（city 参数）");
+                }
+                from = o.selected();
+            } else {
+                GeocodeResolver.Outcome o = resolveViaLlm(origin, ToolArgs.str(params, "origin_confirmed"), city, llmNames);
+                if (o != null && o.needConfirmation()) {
+                    return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
+                }
+                from = o == null || o.notFound() ? GeoLocation.nameOnly(origin) : o.selected();
+                originSource = o == null || o.notFound() ? "raw" : "llm";
             }
-            if (o.notFound()) {
-                return ToolResult.error("LOCATION_NOT_FOUND",
-                        "未找到地点「" + origin + "」，请检查输入或提供更具体名称/城市提示（city 参数）");
-            }
-            from = o.selected();
         } else {
-            GeocodeResolver.Outcome o = resolveViaLlm(origin, ToolArgs.str(params, "origin_confirmed"), city, llmNames);
-            if (o != null && o.needConfirmation()) {
-                return ToolResult.ok(confirmationText("origin", origin, o.candidates()), confirmationData("origin", origin, o.candidates()));
-            }
-            from = o == null || o.notFound() ? GeoLocation.nameOnly(origin) : o.selected();
-            originSource = o == null || o.notFound() ? "raw" : "llm";
+            originSource = "coord";
         }
 
         GeoLocation to;
         String destConfirmed = ToolArgs.str(params, "destination_confirmed");
         String cityHint = city != null && !city.isBlank() ? city : from.city();
         String destSource = "amap";
-        if (resolver.hasKey()) {
+        GeoLocation toCoord = coordOrNull(destination);
+        if (toCoord != null) {
+            to = toCoord;
+            destSource = "coord";
+        } else if (resolver.hasKey()) {
             GeocodeResolver.Outcome o = destConfirmed == null || destConfirmed.isBlank()
                     ? resolver.resolve(destination, cityHint)
                     : resolver.confirm(destination, destConfirmed, cityHint);
@@ -148,7 +160,7 @@ public final class RoutePlannerTool implements Tool {
         scorer.scoreAll(plans, prefer);
         RoutePlan best = scorer.best(plans);
 
-        String output = format(from, to, plans, best);
+        String output = format(from, to, plans, best, taxi);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("origin", from.formatted());
         data.put("destination", to.formatted());
@@ -171,6 +183,33 @@ public final class RoutePlannerTool implements Tool {
 
     // ---------------- 内部 ----------------
 
+    /** mode 归一化：driving/walking/transit 别名 → car/walk/bus；taxi → car（末尾追加估价）；非法返回 null。 */
+    private static String normalizeMode(String raw) {
+        return switch (raw == null ? "" : raw.trim()) {
+            case "car", "driving" -> "car";
+            case "bus", "transit" -> "bus";
+            case "walk", "walking" -> "walk";
+            case "all" -> "all";
+            case "taxi" -> "car";
+            default -> null;
+        };
+    }
+
+    /** 「经度,纬度」格式识别：命中则免解析，直接用坐标构造 GeoLocation；否则返回 null。 */
+    private static GeoLocation coordOrNull(String s) {
+        if (s == null) {
+            return null;
+        }
+        String t = s.trim();
+        if (!t.matches("-?\\d+(\\.\\d+)?\\s*,\\s*-?\\d+(\\.\\d+)?")) {
+            return null;
+        }
+        String[] parts = t.split(",");
+        double lng = Double.parseDouble(parts[0].trim());
+        double lat = Double.parseDouble(parts[1].trim());
+        return new GeoLocation(t, t, null, null, null, lng, lat);
+    }
+
     /**
      * 无 Key 的 LLM 兜底解析：null = LLM 不可用（原名直传）；
      * notFound = LLM 无候选（同样退回原名直传，路线页终裁）。
@@ -183,15 +222,6 @@ public final class RoutePlannerTool implements Tool {
         return confirmed == null || confirmed.isBlank()
                 ? resolver.select(input, cityHint, llmNames.candidates(input, cityHint))
                 : resolver.confirm(input, confirmed, cityHint, llmNames);
-    }
-
-    private String apiKey(RunContext ctx) {
-        String fromCfg = ctx != null && ctx.config() != null ? ctx.config().tools.routePlannerAmapKey : null;
-        if (fromCfg != null && !fromCfg.isBlank()) {
-            return fromCfg.trim();
-        }
-        String env = System.getenv("AMAP_KEY");
-        return env == null || env.isBlank() ? "" : env.trim();
     }
 
     private synchronized void ensureClients(String key) {
@@ -217,7 +247,7 @@ public final class RoutePlannerTool implements Tool {
         }
         sb.append("\n📌 请根据对话上下文选择最合适的地点，将参数 ").append(field)
                 .append("_confirmed 设为该地点完整名称（如「").append(candidates.get(0).formatted())
-                .append("」），其余参数不变，重新调用 route_planner。");
+                .append("」），其余参数不变，重新调用 route_query。");
         return sb.toString();
     }
 
@@ -243,7 +273,7 @@ public final class RoutePlannerTool implements Tool {
     }
 
     /** 结果格式化（设计方案 §二.3）。 */
-    private static String format(GeoLocation from, GeoLocation to, List<RoutePlan> plans, RoutePlan best) {
+    private static String format(GeoLocation from, GeoLocation to, List<RoutePlan> plans, RoutePlan best, boolean taxi) {
         StringBuilder sb = new StringBuilder();
         sb.append("📍 ").append(from.label()).append(" → ").append(to.label()).append('\n');
         sb.append("═".repeat(44)).append('\n');
@@ -270,6 +300,16 @@ public final class RoutePlannerTool implements Tool {
         }
         sb.append("─".repeat(44)).append('\n');
         sb.append("⭐ 推荐: ").append(RoutePlan.modeLabel(best.mode())).append(best.summary());
+        if (taxi) {
+            sb.append('\n');
+            if (best.distanceMeters() > 0) {
+                double fare = 11 + Math.max(0, best.distanceMeters() / 1000.0 - 3) * 2.5; // 起步价 11 元含 3 公里
+                sb.append("🚕 打车粗略估价: 约 ").append(String.format("%.0f", fare))
+                        .append(" 元（起步价11元/3公里 + 2.5元/公里，仅供参考）");
+            } else {
+                sb.append("🚕 打车估价需要距离数据（网页降级可能缺距离），配置 AMAP_KEY 可获精确距离");
+            }
+        }
         if (webSource) {
             sb.append('\n').append("（数据源: 高德网页渲染，未配置 AMAP_KEY，解析自页面主/备选卡片，驾车费用等明细有限；配置后可获官方多方案+精确费用）");
         }

@@ -10,13 +10,13 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * RoutePlannerTool 冒烟：真实数据源端到端。
+ * RouteQueryTool 冒烟：真实数据源端到端。
  * 无 AMAP_KEY → 浏览器打开高德路线页（需本地 Chrome，复用 BrowserTool 会话）；
  * 有 AMAP_KEY（环境变量）→ 走官方 API 并额外覆盖地名消歧确认流。
  */
-class RoutePlannerToolTest {
+class RouteQueryToolTest {
 
-    private final RoutePlannerTool tool = new RoutePlannerTool();
+    private final RouteQueryTool tool = new RouteQueryTool();
 
     @AfterAll
     static void closeBrowser() {
