@@ -19,6 +19,11 @@ public final class CitationVerifier {
     /** 回答中 URL 提取（排除空白与 markdown/中文括号尾缀）。 */
     private static final Pattern URL_IN_ANSWER = Pattern.compile("https?://[^\\s<>\"'）)\\]]+");
 
+    /** 答复中的占位符/待补标记：任何任务下都拦截（与外部内容无关）。 */
+    private static final Pattern PLACEHOLDER = Pattern.compile(
+            "PLACEHOLDER|TODO|FIXME|TBD|TBC|待补|待填|x{3,}",
+            Pattern.CASE_INSENSITIVE);
+
     private static final String UNCITED = "未溯源";
 
     private CitationVerifier() {
@@ -28,6 +33,15 @@ public final class CitationVerifier {
     }
 
     public static Check check(List<Message> messages, String answer) {
+        String ans = answer == null ? "" : answer;
+
+        // 占位符/待补标记：任何任务下都拦截（与外部内容无关）
+        Matcher ph = PLACEHOLDER.matcher(ans);
+        if (ph.find()) {
+            return new Check(false, "答复含占位符/待补标记: " + ph.group()
+                    + "。请替换为真实内容或真实来源 URL 后重试。");
+        }
+
         StringBuilder toolContent = new StringBuilder();
         for (Message m : messages) {
             if (m.role() == Message.Role.TOOL) {
@@ -38,15 +52,15 @@ public final class CitationVerifier {
         if (whitelist.isEmpty()) {
             return new Check(true, "无外部内容，豁免引用校验");
         }
-        String ans = answer == null ? "" : answer;
 
         // ① 防编造：答复 URL 必须可溯源
         Matcher m = URL_IN_ANSWER.matcher(ans);
         while (m.find()) {
             String u = m.group().replaceAll("[.,;，。；：]+$", "");
             if (!matchesWhitelist(u, whitelist)) {
-                return new Check(false, "答复中的 URL 不在轨迹来源（<external source=…>）内，疑似编造: " + u
-                        + "。只能引用工具结果中的来源 URL，无法溯源的表述改标「未溯源」。");
+                return new Check(false, "答复中的 URL 不在轨迹来源白名单内，疑似编造: " + u
+                        + "。可用来源（请逐字符原样复制，勿改尾斜杠/大小写）: " + firstFew(whitelist)
+                        + "；无法溯源的表述改标「未溯源」。");
             }
         }
 
