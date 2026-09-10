@@ -3,13 +3,9 @@ package com.mkr.tools.route;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.mkr.util.Json;
 
-import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +26,7 @@ public final class GeocodeResolver {
     public static final double AUTO_SELECT_THRESHOLD = 0.8;
 
     private static final String PLACE_TEXT_URL = "https://restapi.amap.com/v3/place/text";
+    private static final String PLACE_AROUND_URL = "https://restapi.amap.com/v3/place/around";
 
     private final HttpClient http;
     private final String amapKey;
@@ -159,6 +156,27 @@ public final class GeocodeResolver {
         return normalize(input) + "|" + (cityHint == null ? "" : cityHint.trim());
     }
 
+    /**
+     * place/around 周边搜索（需 Key）：返回与 place/text 同构的 POI 列表，
+     * 按高德返回顺序（距离升序）原样返回，不计算置信度。
+     */
+    public List<GeoLocation> nearby(String keyword, String location, int radius) {
+        if (!hasKey() || keyword == null || keyword.isBlank() || location == null || location.isBlank()) {
+            return List.of();
+        }
+        try {
+            StringBuilder url = new StringBuilder(PLACE_AROUND_URL)
+                    .append("?key=").append(amapKey)
+                    .append("&keywords=").append(URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8))
+                    .append("&location=").append(URLEncoder.encode(location.trim(), StandardCharsets.UTF_8))
+                    .append("&radius=").append(Math.max(1, Math.min(radius, 50_000)))
+                    .append("&offset=5&page=1&extensions=base");
+            return parsePois(AmapHttp.get(http, url.toString()));
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
     /** place/text 候选搜索（含置信度计算与排序）。 */
     public List<GeoLocation> candidates(String input, String cityHint) {
         if (!hasKey() || input == null || input.isBlank()) {
@@ -172,11 +190,7 @@ public final class GeocodeResolver {
             if (cityHint != null && !cityHint.isBlank()) {
                 url.append("&city=").append(URLEncoder.encode(cityHint.trim(), StandardCharsets.UTF_8));
             }
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url.toString()))
-                    .timeout(Duration.ofSeconds(10))
-                    .GET().build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            List<GeoLocation> out = parsePois(resp.body());
+            List<GeoLocation> out = parsePois(AmapHttp.get(http, url.toString()));
             for (int i = 0; i < out.size(); i++) {
                 out.get(i).setConfidence(confidence(input, out.get(i), i, cityHint));
             }

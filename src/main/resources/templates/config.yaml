@@ -21,6 +21,11 @@ tools:
     max-results: 5
   web-fetch:
     provider: local           # local(jsoup) | jina-reader
+  read-file:
+    keyword-max-results: 5    # keywords 模式最多返回段落数（0=不限）
+  route-planner:
+    amap-key: ${AMAP_KEY}     # 高德开放平台 Key；留空走 LLM/浏览器降级兜底
+    headless: false           # 浏览器降级无头模式（高德对无头页有反爬风险）
   sandbox:
     type: local               # local(默认,权限门控) | docker | bwrap | cloud
     # image: alpine:3.20      # docker 用
