@@ -48,20 +48,33 @@ public final class WebSearchTool implements Tool {
         String provider = ctx.config().tools.webSearchProvider;
         String apiKey = ctx.config().tools.webSearchApiKey;
         if (apiKey == null || apiKey.isBlank()) {
-            apiKey = System.getenv("TAVILY_API_KEY") != null && !"tavily".equals(provider) && !"serper".equals(provider)
-                    ? System.getenv("TAVILY_API_KEY") : apiKey;
+            // 配置缺省时回退到 provider 对应环境变量：tavily→TAVILY_API_KEY，serper→SERPER_API_KEY，jina 无需 key
+            apiKey = switch (provider) {
+                case "serper" -> System.getenv("SERPER_API_KEY");
+                case "jina" -> null;
+                default -> System.getenv("TAVILY_API_KEY");
+            };
         }
-        List<Result> results = switch (provider) {
+        if (!"jina".equals(provider) && (apiKey == null || apiKey.isBlank())) {
+            String env = "serper".equals(provider) ? "SERPER_API_KEY" : "TAVILY_API_KEY";
+            return ToolResult.error("MISSING_API_KEY",
+                    "缺少 API key：请配置 tools.web-search.api-key 或环境变量 " + env + "（provider=" + provider + "）");
+        }
+        Outcome outcome = switch (provider) {
             case "serper" -> serper(query, max, apiKey);
             case "jina" -> jina(query, max);
             default -> tavily(query, max, apiKey);
         };
-        if (results.isEmpty()) {
-            return ToolResult.error("SEARCH_EMPTY", "搜索无结果（provider=" + provider + "，检查 api-key 配置 tools.web-search.api-key）");
+        if (outcome.errorCode() != null) {
+            return ToolResult.error(outcome.errorCode(), outcome.message());
+        }
+        if (outcome.results().isEmpty()) {
+            return ToolResult.error("SEARCH_EMPTY",
+                    "搜索无结果（provider=" + provider + "），建议缩短或改写 query 后重试");
         }
         StringBuilder sb = new StringBuilder("搜索: " + query + "\n\n");
         int i = 1;
-        for (Result r : results) {
+        for (Result r : outcome.results()) {
             sb.append(i++).append(". ").append(r.title() == null ? "(无标题)" : r.title()).append('\n');
             sb.append(sanitizer.wrap(r.content(), r.url())).append("\n\n");
         }
@@ -71,10 +84,18 @@ public final class WebSearchTool implements Tool {
     private record Result(String title, String url, String content) {
     }
 
-    private List<Result> tavily(String query, int max, String apiKey) {
-        if (apiKey == null || apiKey.isBlank()) {
-            return List.of();
+    /** 一次搜索的返回：要么有 results，要么带 errorCode/message（区分无 key / 请求失败 / 真·空结果）。 */
+    private record Outcome(List<Result> results, String errorCode, String message) {
+        static Outcome ok(List<Result> results) {
+            return new Outcome(results, null, null);
         }
+
+        static Outcome err(String code, String message) {
+            return new Outcome(List.of(), code, message);
+        }
+    }
+
+    private Outcome tavily(String query, int max, String apiKey) {
         try {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("query", query);
@@ -88,16 +109,13 @@ public final class WebSearchTool implements Tool {
                 out.add(new Result(r.path("title").asText(""), r.path("url").asText(""),
                         r.path("content").asText("")));
             }
-            return out;
+            return Outcome.ok(out);
         } catch (Exception e) {
-            return List.of();
+            return Outcome.err("SEARCH_ERROR", "Tavily 请求失败: " + e.getMessage());
         }
     }
 
-    private List<Result> serper(String query, int max, String apiKey) {
-        if (apiKey == null || apiKey.isBlank()) {
-            return List.of();
-        }
+    private Outcome serper(String query, int max, String apiKey) {
         try {
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("X-API-KEY", apiKey);
@@ -109,20 +127,20 @@ public final class WebSearchTool implements Tool {
                 out.add(new Result(r.path("title").asText(""), r.path("link").asText(""),
                         r.path("snippet").asText("")));
             }
-            return out;
+            return Outcome.ok(out);
         } catch (Exception e) {
-            return List.of();
+            return Outcome.err("SEARCH_ERROR", "Serper 请求失败: " + e.getMessage());
         }
     }
 
-    private List<Result> jina(String query, int max) {
+    private Outcome jina(String query, int max) {
         try {
             HttpRequest req = HttpRequest.newBuilder(URI.create("https://s.jina.ai/" + java.net.URLEncoder.encode(query, StandardCharsets.UTF_8)))
                     .timeout(Duration.ofSeconds(20))
                     .GET().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() / 100 != 2) {
-                return List.of();
+                return Outcome.err("SEARCH_ERROR", "Jina 请求失败: HTTP " + resp.statusCode());
             }
             // s.jina.ai 返回 markdown 链接列表，粗提取 Title[URL] 行
             List<Result> out = new java.util.ArrayList<>();
@@ -132,9 +150,9 @@ public final class WebSearchTool implements Tool {
                     out.add(new Result(m.group(1), m.group(2), line.replaceAll("\\[([^\\]]+)\\]\\([^)]+\\)", "$1").strip()));
                 }
             }
-            return out;
+            return Outcome.ok(out);
         } catch (Exception e) {
-            return List.of();
+            return Outcome.err("SEARCH_ERROR", "Jina 请求失败: " + e.getMessage());
         }
     }
 }
