@@ -43,6 +43,9 @@ import java.util.concurrent.Callable;
                 PicocliCommands.ReplCmd.class})
 public final class PicocliCommands {
 
+    /** 内置 skill 清单（classpath templates/skills 下的相对路径，每行一个）。 */
+    private static final String BUILTIN_SKILLS_MANIFEST = "/templates/skills/manifest.txt";
+
     static Path cwd() {
         return Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
     }
@@ -68,7 +71,7 @@ public final class PicocliCommands {
                 Path soul = Path.of(System.getProperty("user.home"), ".mkr", "SOUL.md");
                 copyTemplate("/templates/SOUL.md", soul, false);
                 Files.createDirectories(cwd.resolve("workspace/memories"));
-                Files.createDirectories(cwd.resolve("skills"));
+                seedBuiltinSkills(cwd.resolve("skills"));
                 if (!Files.isRegularFile(cwd.resolve("SOUL.md"))) {
                     copyTemplate("/templates/SOUL.md", cwd.resolve("SOUL.md"), false);
                 }
@@ -79,6 +82,7 @@ public final class PicocliCommands {
                 System.out.println("  .env                    密钥（LLM_API_KEY / TAVILY_API_KEY）");
                 System.out.println("  " + soul + "  人格文件（5 段模板，填写后生效）");
                 System.out.println("  eval/tasks.json         评估集样例");
+                System.out.println("  skills/                 内置 skills（data-retrieval / data-verify / route-planner）");
                 System.out.println("下一步: 在 .env 填入 LLM_API_KEY，然后 mkr 或 mkr run \"<任务>\"");
                 return 0;
             } catch (Exception e) {
@@ -100,6 +104,28 @@ public final class PicocliCommands {
             Files.createDirectories(target.getParent() == null ? target : target.getParent());
             Files.writeString(target, new String(in.readAllBytes(), StandardCharsets.UTF_8), StandardCharsets.UTF_8);
             System.out.println("生成: " + target);
+        }
+    }
+
+    /** init 时把内置 skill 从 classpath 种入项目 skills/（已存在同名文件不覆盖，便于自进化）。 */
+    private static void seedBuiltinSkills(Path skillsDir) throws IOException {
+        Files.createDirectories(skillsDir);
+        try (InputStream in = PicocliCommands.class.getResourceAsStream(BUILTIN_SKILLS_MANIFEST)) {
+            if (in == null) {
+                return; // 未打包 manifest（理论不出现）
+            }
+            for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+                String rel = line.trim();
+                if (rel.isEmpty()) {
+                    continue;
+                }
+                Path target = skillsDir.resolve(rel).normalize();
+                if (!target.startsWith(skillsDir)) {
+                    System.err.println("跳过越界 skill 路径: " + rel);
+                    continue;
+                }
+                copyTemplate("/templates/skills/" + rel, target, false);
+            }
         }
     }
 

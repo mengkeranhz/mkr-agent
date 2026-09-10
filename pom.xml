@@ -159,6 +159,17 @@
 
   <build>
     <finalName>mkr</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- 内置 skill 唯一权威源在仓库根 skills/，构建期拷入 classpath（templates/skills/），避免手抄漂移 -->
+      <resource>
+        <directory>skills</directory>
+        <targetPath>templates/skills</targetPath>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
