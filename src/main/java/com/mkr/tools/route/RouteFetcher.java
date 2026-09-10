@@ -88,6 +88,8 @@ public final class RouteFetcher {
                 if (!plans.isEmpty()) {
                     return plans;
                 }
+            } catch (AmapBusinessException e) {
+                throw e; // 业务性失败（步行超范围/公交缺 city）：快速失败，不降级浏览器
             } catch (Exception ignored) {
                 // API 失败（配额/参数/网络）→ 浏览器降级
             }
