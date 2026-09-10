@@ -297,6 +297,19 @@ class RoutePlannerComponentsTest {
         assertTrue(bare.contains("空白页面"));
     }
 
+    // ---------------- AmapRouteClient：业务性失败分类 ----------------
+
+    @Test
+    void businessFailureInfocodesAreClassified() {
+        // 业务性失败（步行超范围/公交缺 city）→ 有提示、不走浏览器兜底
+        assertTrue(AmapRouteClient.businessHint("20803").contains("步行"));
+        assertTrue(AmapRouteClient.businessHint("20001").contains("城市"));
+        // 临时性失败（Key 无效/配额/服务不可用）→ null，走浏览器兜底
+        assertNull(AmapRouteClient.businessHint("10001"));
+        assertNull(AmapRouteClient.businessHint("10003"));
+        assertNull(AmapRouteClient.businessHint(null));
+    }
+
     // ---------------- RoutePlan 文本派生 ----------------
 
     @Test
